@@ -172,7 +172,7 @@ export default function App() {
     setError(null);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${GEMINI_API_KEY}`;
 
       let defaultDetail = "";
       if (!prompt.trim()) {
@@ -208,7 +208,10 @@ export default function App() {
             { text: fullPrompt },
             { inlineData: { mimeType: selectedFile.type, data: originalPreview.split(',')[1] } }
           ]
-        }]
+        }],
+        generationConfig: {
+          responseModalities: ["TEXT", "IMAGE"]
+        }
       };
 
       const res = await fetch(url, {
@@ -220,7 +223,8 @@ export default function App() {
       if (!res.ok) {
         const errorData = await res.json();
         console.error("Erreur API Gemini:", errorData);
-        throw new Error("Erreur de l'API de génération.");
+        const detail = errorData?.error?.message || "Erreur inconnue";
+        throw new Error(`Erreur API Gemini : ${detail}`);
       }
 
       const result = await res.json();
