@@ -1,7 +1,7 @@
 {
-  "name": "fiche-decouverte-sextant",
-  "version": "2.0.0",
-  "description": "Fiche Découverte Immobilière — Sextant France Martinique",
+  "name": "homestaging-pro",
+  "version": "1.0.0",
+  "description": "HomeStaging PRO — Transformation d'images immobilières par IA (OPTIMMO DOM)",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -9,11 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "firebase": "^10.12.2",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.1.0"
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "vite": "^5.3.1"
   }
 }
