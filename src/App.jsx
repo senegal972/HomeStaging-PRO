@@ -255,7 +255,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("Erreur génération:", err);
-      setError("Erreur lors de la génération. Veuillez réessayer.");
+      setError(`Erreur : ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
