@@ -15,13 +15,18 @@ import {
 } from 'lucide-react';
 
 // === CONFIGURATION Firebase ===
+const FIREBASE_CONFIGURED = !!(
+  import.meta.env.VITE_FIREBASE_API_KEY &&
+  import.meta.env.VITE_FIREBASE_PROJECT_ID
+);
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || ""
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "placeholder",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "placeholder.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "placeholder",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "placeholder.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "000000000000",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:000000000000:web:placeholder"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -48,12 +53,16 @@ export default function App() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
+    if (!FIREBASE_CONFIGURED) {
+      setError("⚙️ Configuration manquante — Ajoutez vos variables d'environnement Firebase et Gemini dans Vercel (Settings → Environment Variables), puis redéployez.");
+      return;
+    }
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
         signInAnonymously(auth).catch(err => {
           console.error("Erreur connexion anonyme:", err);
-          setError("Problème d'initialisation de la session.");
+          setError("Problème d'initialisation Firebase. Vérifiez vos variables d'environnement.");
         });
       }
     });
