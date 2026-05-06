@@ -11,7 +11,8 @@ import {
 import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
-  Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw
+  Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
+  KeyRound, Eye, EyeOff, X, CheckCircle2
 } from 'lucide-react';
 
 // === CONFIGURATION Firebase ===
@@ -35,7 +36,8 @@ const db = getFirestore(app);
 const appId = 'maison-ia-prive';
 
 // === CONFIGURATION Gemini ===
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
+const GEMINI_API_KEY_DEFAULT = import.meta.env.VITE_GEMINI_API_KEY || "";
+const LS_KEY = 'homestaging_gemini_key';
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -49,8 +51,38 @@ export default function App() {
   const [error, setError] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [history, setHistory] = useState([]);
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem(LS_KEY) || "");
+  const [keyInput, setKeyInput] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
 
   const fileInputRef = useRef(null);
+
+  const effectiveApiKey = userApiKey || GEMINI_API_KEY_DEFAULT;
+
+  const openKeyModal = () => {
+    setKeyInput(userApiKey);
+    setKeySaved(false);
+    setShowKey(false);
+    setShowKeyModal(true);
+  };
+
+  const saveKey = () => {
+    const trimmed = keyInput.trim();
+    setUserApiKey(trimmed);
+    if (trimmed) localStorage.setItem(LS_KEY, trimmed);
+    else localStorage.removeItem(LS_KEY);
+    setKeySaved(true);
+    setTimeout(() => setShowKeyModal(false), 1200);
+  };
+
+  const clearKey = () => {
+    setUserApiKey("");
+    setKeyInput("");
+    localStorage.removeItem(LS_KEY);
+    setKeySaved(false);
+  };
 
   useEffect(() => {
     if (!FIREBASE_CONFIGURED) {
@@ -163,8 +195,8 @@ export default function App() {
       return;
     }
 
-    if (!GEMINI_API_KEY) {
-      setError("Clé API Gemini manquante. Configurez VITE_GEMINI_API_KEY dans votre fichier .env.");
+    if (!effectiveApiKey) {
+      setError("Clé API Gemini manquante. Cliquez sur l'icône clé 🔑 pour saisir votre clé Google AI Studio.");
       return;
     }
 
@@ -172,7 +204,7 @@ export default function App() {
     setError(null);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=${GEMINI_API_KEY}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=${effectiveApiKey}`;
 
       let defaultDetail = "";
       if (!prompt.trim()) {
@@ -322,6 +354,18 @@ export default function App() {
               className="flex items-center gap-2 text-[10px] font-bold text-slate-500 hover:text-indigo-600 px-4 py-2 rounded-xl transition-colors"
             >
               <RefreshCcw className="w-4 h-4" /> Reset
+            </button>
+            <button
+              onClick={openKeyModal}
+              title="Configurer la clé API Gemini"
+              className={`flex items-center gap-1.5 text-[10px] font-bold px-3 py-2 rounded-xl transition-colors border ${
+                userApiKey
+                  ? 'border-green-200 bg-green-50 text-green-700 hover:bg-green-100'
+                  : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              {userApiKey ? 'Clé active' : 'Clé API'}
             </button>
             {user && !user.isAnonymous ? (
               <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-4 rounded-2xl border border-slate-100">
@@ -538,6 +582,81 @@ export default function App() {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #CBD5E1; }
       `}</style>
+
+      {showKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4" onClick={() => setShowKeyModal(false)}>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 space-y-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-50 rounded-2xl">
+                  <KeyRound className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-black text-slate-900">Clé API Gemini</h2>
+                  <p className="text-[10px] text-slate-400">Google AI Studio — par compte</p>
+                </div>
+              </div>
+              <button onClick={() => setShowKeyModal(false)} className="p-2 text-slate-300 hover:text-slate-500 rounded-xl transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-1">
+              <p className="text-[10px] font-black text-amber-700 uppercase tracking-wider">Comment obtenir une clé ?</p>
+              <p className="text-[10px] text-amber-600 leading-relaxed">
+                1. Allez sur <span className="font-bold">aistudio.google.com</span><br/>
+                2. Connectez-vous avec le compte Google souhaité<br/>
+                3. Cliquez sur <span className="font-bold">Get API key</span> → <span className="font-bold">Create API key</span><br/>
+                4. Copiez et collez la clé ci-dessous
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Votre clé API</label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={keyInput}
+                    onChange={e => { setKeyInput(e.target.value); setKeySaved(false); }}
+                    placeholder="AIzaSy..."
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-mono outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-300 transition-all pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              {userApiKey && (
+                <p className="text-[10px] text-slate-400">
+                  Clé active : <span className="font-mono font-bold">...{userApiKey.slice(-6)}</span>
+                  <button onClick={clearKey} className="ml-2 text-red-400 hover:text-red-600 font-bold underline">Supprimer</button>
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowKeyModal(false)}
+                className="flex-1 py-3 border border-slate-200 rounded-2xl text-xs font-bold text-slate-500 hover:bg-slate-50 transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={saveKey}
+                disabled={!keyInput.trim()}
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {keySaved ? <><CheckCircle2 className="w-4 h-4" /> Enregistré !</> : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
