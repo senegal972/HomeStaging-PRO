@@ -86,7 +86,7 @@ export default function App() {
 
   useEffect(() => {
     if (!FIREBASE_CONFIGURED) {
-      setError("⚙️ Configuration manquante — Ajoutez vos variables d'environnement Firebase et Gemini dans Vercel (Settings → Environment Variables), puis redéployez.");
+      setError("⚙️ Configuration manquante — Ajoutez vos variables d'environnement Firebase dans Netlify (Site settings → Environment variables), puis redéployez.");
       return;
     }
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
