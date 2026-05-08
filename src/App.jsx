@@ -205,8 +205,6 @@ export default function App() {
     setError(null);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${effectiveApiKey}`;
-
       let defaultDetail = "";
       if (!prompt.trim()) {
         if (objective === 'declutter') defaultDetail = "Completely empty and clean room, no furniture, minimalistic white space.";
@@ -232,39 +230,27 @@ export default function App() {
 
       const contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
       const finalDetails = prompt.trim() || defaultDetail;
-
       const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}. Design details: ${finalDetails}. Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
 
-      const payload = {
-        contents: [{
-          parts: [
-            { text: fullPrompt },
-            { inlineData: { mimeType: selectedFile.type, data: originalPreview.split(',')[1] } }
-          ]
-        }],
-        generationConfig: {
-          responseModalities: ["TEXT", "IMAGE"]
-        }
-      };
-
-      const res = await fetch(url, {
+      const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          prompt: fullPrompt,
+          mimeType: selectedFile.type,
+          imageData: originalPreview.split(',')[1],
+          userApiKey: userApiKey || undefined
+        })
       });
 
+      const result = await res.json();
+
       if (!res.ok) {
-        const errorData = await res.json();
-        console.error("Erreur API Gemini:", errorData);
-        const detail = errorData?.error?.message || "Erreur inconnue";
-        throw new Error(`Erreur API Gemini : ${detail}`);
+        throw new Error(result.error || 'Erreur inconnue');
       }
 
-      const result = await res.json();
-      const imagePart = result.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-
-      if (imagePart?.inlineData?.data) {
-        const newImg = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+      if (result.imageData) {
+        const newImg = `data:${result.mimeType};base64,${result.imageData}`;
         setGeneratedImage(newImg);
 
         if (user && !user.isAnonymous) {
@@ -284,7 +270,7 @@ export default function App() {
           setError("Image générée ! Connectez-vous via Google pour sauvegarder dans votre historique.");
         }
       } else {
-        throw new Error("L'IA n'a pas retourné d'image valide.");
+        throw new Error(result.error || "L'IA n'a pas retourné d'image valide.");
       }
     } catch (err) {
       console.error("Erreur génération:", err);
