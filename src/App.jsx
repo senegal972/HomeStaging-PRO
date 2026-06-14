@@ -39,10 +39,76 @@ const appId = 'maison-ia-prive';
 const GEMINI_API_KEY_DEFAULT = import.meta.env.VITE_GEMINI_API_KEY || "";
 const LS_KEY = 'homestaging_gemini_key';
 
+// === Compression image côté client ===
+// Redimensionne à 1600px max + JPEG q=0.85 pour rester sous la limite payload Netlify (~6 MB)
+async function compressImage(file, maxDim = 1600, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Lecture fichier impossible."));
+    reader.onload = e => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Image invalide."));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(blob => {
+          if (!blob) return reject(new Error("Compression échouée."));
+          const compressed = new File([blob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: 'image/jpeg' });
+          resolve(compressed);
+        }, 'image/jpeg', quality);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// === Styles prédéfinis par objectif ===
+const STYLES_BY_OBJECTIVE = {
+  declutter: [
+    { id: 'empty-bright', label: 'Vide & lumineux', desc: 'Pièce vidée, murs blancs, lumière naturelle' },
+    { id: 'showroom', label: 'Showroom', desc: 'Sol neutre, ambiance neuve, prêt à visiter' },
+    { id: 'staging-ready', label: 'Prêt à meubler', desc: 'Espace nettoyé, fond neutre, mise en valeur volume' },
+  ],
+  furnish: [
+    { id: 'scandinave', label: 'Scandinave', desc: 'Bois clair, blanc, lin, plantes vertes' },
+    { id: 'tropical', label: 'Tropical chic', desc: 'Rotin, bois exotique, plantes luxuriantes, tons sable' },
+    { id: 'contemporain', label: 'Contemporain luxe', desc: 'Lignes pures, marbre, laiton, velours, éclairage design' },
+    { id: 'industriel', label: 'Industriel', desc: 'Métal noir, bois brut, briques, ampoules Edison' },
+    { id: 'boheme', label: 'Bohème', desc: 'Textiles ethniques, macramé, bois flotté, terracotta' },
+    { id: 'mediterraneen', label: 'Méditerranéen', desc: 'Blanc cassé, bleu, terre cuite, lin, céramique' },
+  ],
+  renovate: [
+    { id: 'moderne', label: 'Moderne épuré', desc: 'Cuisine ouverte, sols grand format, peinture mate' },
+    { id: 'tropical-chic', label: 'Tropical chic', desc: 'Bois exotique, ventilateurs, persiennes, tons clairs' },
+    { id: 'haussmannien', label: 'Haussmannien', desc: 'Moulures, parquet point Hongrie, cheminée marbre' },
+    { id: 'loft', label: 'Loft new-yorkais', desc: 'Béton ciré, verrière atelier, métal noir' },
+    { id: 'japonais', label: 'Japandi', desc: 'Bois clair, ligne basse, papier de riz, zen' },
+    { id: 'colonial', label: 'Colonial créole', desc: 'Bois sombre, persiennes, ventilateurs, charme antillais' },
+  ],
+  build: [
+    { id: 'villa-contemporaine', label: 'Villa contemporaine', desc: 'Volumes blancs, baies vitrées, toit plat, piscine' },
+    { id: 'bois-verre', label: 'Bois & verre', desc: 'Bardage bois, grandes ouvertures, toiture en pente' },
+    { id: 'beton-brut', label: 'Béton brut', desc: 'Architecture brutaliste, lignes droites, terrasse plate' },
+    { id: 'creole-moderne', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
+    { id: 'mediterraneen-build', label: 'Méditerranéen', desc: 'Façade ocre, tuiles, arcades, volets bois' },
+  ],
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [mode, setMode] = useState('interior');
   const [objective, setObjective] = useState('declutter');
+  const [styleId, setStyleId] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [originalPreview, setOriginalPreview] = useState(null);
   const [generatedImage, setGeneratedImage] = useState(null);
@@ -149,8 +215,14 @@ export default function App() {
     setOriginalPreview(null);
     setGeneratedImage(null);
     setPrompt("");
+    setStyleId(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleObjectiveChange = (newObj) => {
+    setObjective(newObj);
+    setStyleId(null);
   };
 
   const handleFileChange = async (e) => {
@@ -182,6 +254,14 @@ export default function App() {
         return;
       }
       setIsConverting(false);
+    }
+
+    try {
+      fileToProcess = await compressImage(fileToProcess);
+    } catch (err) {
+      console.error("Erreur compression:", err);
+      setError("Impossible de compresser cette image.");
+      return;
     }
 
     setSelectedFile(fileToProcess);
@@ -230,7 +310,9 @@ export default function App() {
 
       const contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
       const finalDetails = prompt.trim() || defaultDetail;
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}. Design details: ${finalDetails}. Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
+      const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause} Design details: ${finalDetails}. Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
 
       const res = await fetch('/api/generate', {
         method: 'POST',
@@ -261,6 +343,7 @@ export default function App() {
               prompt: prompt || "Auto-généré",
               mode: mode,
               objective: objective,
+              styleId: styleId || null,
               createdAt: serverTimestamp()
             });
           } catch (fireErr) {
@@ -426,7 +509,7 @@ export default function App() {
                   {objectiveOptions.map(opt => (
                     <button
                       key={opt.id}
-                      onClick={() => setObjective(opt.id)}
+                      onClick={() => handleObjectiveChange(opt.id)}
                       className={`flex flex-col items-start p-3 rounded-2xl border transition-all text-left ${
                         objective === opt.id
                           ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
@@ -445,8 +528,38 @@ export default function App() {
                 </div>
               </div>
 
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">3. Style (Optionnel)</h3>
+                  {styleId && (
+                    <button
+                      onClick={() => setStyleId(null)}
+                      className="text-[9px] font-bold text-slate-400 hover:text-red-500 uppercase tracking-tighter transition-colors"
+                    >
+                      Effacer
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 custom-scrollbar">
+                  {(STYLES_BY_OBJECTIVE[objective] || []).map(s => (
+                    <button
+                      key={s.id}
+                      onClick={() => setStyleId(s.id === styleId ? null : s.id)}
+                      title={s.desc}
+                      className={`flex-shrink-0 px-3 py-2 rounded-2xl border transition-all text-[10px] font-bold uppercase tracking-tight whitespace-nowrap ${
+                        styleId === s.id
+                          ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                          : 'bg-slate-50 border-slate-100 text-slate-500 hover:border-indigo-200 hover:text-indigo-600'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="space-y-3">
-                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">3. Précisions (Optionnel)</h3>
+                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">4. Précisions (Optionnel)</h3>
                 <textarea
                   value={prompt}
                   onChange={e => setPrompt(e.target.value)}
@@ -540,6 +653,7 @@ export default function App() {
                         setPrompt(item.prompt === "Auto-généré" ? "" : item.prompt);
                         setMode(item.mode || 'interior');
                         setObjective(item.objective || 'declutter');
+                        setStyleId(item.styleId || null);
                         setSelectedFile({ type: 'image/jpeg' });
                         setError(null);
                       }}
