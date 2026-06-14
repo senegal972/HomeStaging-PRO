@@ -12,8 +12,9 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal
 } from 'lucide-react';
+import CompareSlider from './CompareSlider';
 
 // === CONFIGURATION Firebase ===
 const FIREBASE_CONFIGURED = !!(
@@ -122,6 +123,7 @@ export default function App() {
   const [keyInput, setKeyInput] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [keySaved, setKeySaved] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -216,6 +218,7 @@ export default function App() {
     setGeneratedImage(null);
     setPrompt("");
     setStyleId(null);
+    setCompareMode(false);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -587,12 +590,27 @@ export default function App() {
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Résultat IA</h3>
                 {generatedImage && (
-                  <button
-                    onClick={downloadFile}
-                    className="flex items-center gap-2 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors"
-                  >
-                    <Download className="w-3 h-3" /> Télécharger
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {originalPreview && (
+                      <button
+                        onClick={() => setCompareMode(v => !v)}
+                        title={compareMode ? "Vue normale" : "Comparer avant/après"}
+                        className={`flex items-center gap-2 text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors border ${
+                          compareMode
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-slate-50 text-slate-500 border-slate-100 hover:bg-slate-100'
+                        }`}
+                      >
+                        <SplitSquareHorizontal className="w-3 h-3" /> Comparer
+                      </button>
+                    )}
+                    <button
+                      onClick={downloadFile}
+                      className="flex items-center gap-2 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors"
+                    >
+                      <Download className="w-3 h-3" /> Télécharger
+                    </button>
+                  </div>
                 )}
               </div>
               <div className="flex-1 rounded-3xl bg-slate-50 overflow-hidden border border-slate-100 flex items-center justify-center relative shadow-inner">
@@ -605,7 +623,11 @@ export default function App() {
                     <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase">Analyse des pixels...</p>
                   </div>
                 ) : generatedImage ? (
-                  <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                  compareMode && originalPreview ? (
+                    <CompareSlider before={originalPreview} after={generatedImage} />
+                  ) : (
+                    <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                  )
                 ) : (
                   <div className="text-center text-slate-300 p-10">
                     <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
