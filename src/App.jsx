@@ -40,6 +40,18 @@ const appId = 'maison-ia-prive';
 const GEMINI_API_KEY_DEFAULT = import.meta.env.VITE_GEMINI_API_KEY || "";
 const LS_KEY = 'homestaging_gemini_key';
 
+// === Validation upload ===
+const MAX_RAW_UPLOAD_MB = 15;
+
+// === Variantes IA ===
+const VARIANT_COUNT = 4;
+const VARIANT_HINTS = [
+  '',
+  ' Alternative arrangement with warmer color palette and softer natural lighting.',
+  ' Different layout angle with cooler tones and contemporary material accents.',
+  ' Creative composition with rich textures, mixed materials and dramatic lighting.',
+];
+
 // === Compression image côté client ===
 // Redimensionne à 1600px max + JPEG q=0.85 pour rester sous la limite payload Netlify (~6 MB)
 async function compressImage(file, maxDim = 1600, quality = 0.85) {
@@ -124,6 +136,8 @@ export default function App() {
   const [showKey, setShowKey] = useState(false);
   const [keySaved, setKeySaved] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
+  const [variants, setVariants] = useState(null);
+  const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   const fileInputRef = useRef(null);
 
@@ -219,6 +233,8 @@ export default function App() {
     setPrompt("");
     setStyleId(null);
     setCompareMode(false);
+    setVariants(null);
+    setSelectedVariantIdx(0);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -233,11 +249,20 @@ export default function App() {
     if (!file) return;
 
     setGeneratedImage(null);
+    setVariants(null);
     setError(null);
 
     const isHeic = file.name.toLowerCase().endsWith('.heic');
     if (!file.type.startsWith('image/') && !isHeic) {
-      setError("Format d'image non supporté.");
+      setError("Format d'image non supporté. Utilisez JPG, PNG ou HEIC.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > MAX_RAW_UPLOAD_MB) {
+      setError(`Fichier trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo. Redimensionnez l'image avant de l'importer.`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
 
@@ -286,84 +311,114 @@ export default function App() {
 
     setIsGenerating(true);
     setError(null);
+    setGeneratedImage(null);
+    setVariants(Array.from({ length: VARIANT_COUNT }, () => ({ status: 'pending' })));
+    setSelectedVariantIdx(0);
+
+    let defaultDetail = "";
+    if (!prompt.trim()) {
+      if (objective === 'declutter') defaultDetail = "Completely empty and clean room, no furniture, minimalistic white space.";
+      else if (objective === 'furnish') defaultDetail = "Modern, elegant and cozy professional furniture staging.";
+      else if (objective === 'renovate') defaultDetail = "Modern renovation with high-end materials.";
+      else if (objective === 'build') defaultDetail = "Architectural building extension with modern glass and concrete.";
+    }
+
+    let objectiveInstruction = "";
+    switch(objective) {
+      case 'declutter':
+        objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
+        break;
+      case 'furnish':
+        objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
+        break;
+      case 'build':
+        objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
+        break;
+      default:
+        objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
+    }
+
+    const contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
+    const finalDetails = prompt.trim() || defaultDetail;
+    const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
+    const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
+
+    const imageData = originalPreview.split(',')[1];
+    const mimeType = selectedFile.type;
+
+    const runVariant = async (idx) => {
+      const hint = VARIANT_HINTS[idx] || '';
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, userApiKey: userApiKey || undefined })
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
+        if (!result.imageData) throw new Error("L'IA n'a pas retourné d'image.");
+        const img = `data:${result.mimeType || 'image/png'};base64,${result.imageData}`;
+        setVariants(v => {
+          if (!v) return v;
+          const next = [...v];
+          next[idx] = { status: 'done', image: img };
+          return next;
+        });
+        return { idx, image: img };
+      } catch (err) {
+        console.error(`Erreur variante ${idx}:`, err);
+        setVariants(v => {
+          if (!v) return v;
+          const next = [...v];
+          next[idx] = { status: 'error', error: err.message };
+          return next;
+        });
+        return null;
+      }
+    };
 
     try {
-      let defaultDetail = "";
-      if (!prompt.trim()) {
-        if (objective === 'declutter') defaultDetail = "Completely empty and clean room, no furniture, minimalistic white space.";
-        else if (objective === 'furnish') defaultDetail = "Modern, elegant and cozy professional furniture staging.";
-        else if (objective === 'renovate') defaultDetail = "Modern renovation with high-end materials.";
-        else if (objective === 'build') defaultDetail = "Architectural building extension with modern glass and concrete.";
+      const results = await Promise.all(
+        Array.from({ length: VARIANT_COUNT }, (_, i) => runVariant(i))
+      );
+      const successes = results.filter(Boolean);
+
+      if (successes.length === 0) {
+        setError("Aucune variante n'a pu être générée. Vérifiez votre clé API ou réessayez.");
+        return;
       }
 
-      let objectiveInstruction = "";
-      switch(objective) {
-        case 'declutter':
-          objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
-          break;
-        case 'furnish':
-          objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
-          break;
-        case 'build':
-          objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
-          break;
-        default:
-          objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
-      }
+      const first = successes[0];
+      setGeneratedImage(first.image);
+      setSelectedVariantIdx(first.idx);
 
-      const contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
-      const finalDetails = prompt.trim() || defaultDetail;
-      const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
-      const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause} Design details: ${finalDetails}. Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
-
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: fullPrompt,
-          mimeType: selectedFile.type,
-          imageData: originalPreview.split(',')[1],
-          userApiKey: userApiKey || undefined
-        })
-      });
-
-      const result = await res.json();
-
-      if (!res.ok) {
-        throw new Error(result.error || 'Erreur inconnue');
-      }
-
-      if (result.imageData) {
-        const newImg = `data:${result.mimeType};base64,${result.imageData}`;
-        setGeneratedImage(newImg);
-
-        if (user && !user.isAnonymous) {
-          try {
-            await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'designs'), {
-              before: originalPreview,
-              after: newImg,
-              prompt: prompt || "Auto-généré",
-              mode: mode,
-              objective: objective,
-              styleId: styleId || null,
-              createdAt: serverTimestamp()
-            });
-          } catch (fireErr) {
-            console.error("Erreur sauvegarde Firestore:", fireErr);
-          }
-        } else {
-          setError("Image générée ! Connectez-vous via Google pour sauvegarder dans votre historique.");
+      if (user && !user.isAnonymous) {
+        try {
+          await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'designs'), {
+            before: originalPreview,
+            after: first.image,
+            prompt: prompt || "Auto-généré",
+            mode,
+            objective,
+            styleId: styleId || null,
+            createdAt: serverTimestamp()
+          });
+        } catch (fireErr) {
+          console.error("Erreur sauvegarde Firestore:", fireErr);
         }
       } else {
-        throw new Error(result.error || "L'IA n'a pas retourné d'image valide.");
+        setError("Variantes générées ! Connectez-vous via Google pour sauvegarder dans votre historique.");
       }
-    } catch (err) {
-      console.error("Erreur génération:", err);
-      setError(`Erreur : ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const selectVariant = (idx) => {
+    if (!variants || !variants[idx] || variants[idx].status !== 'done') return;
+    setSelectedVariantIdx(idx);
+    setGeneratedImage(variants[idx].image);
   };
 
   const downloadFile = () => {
@@ -635,6 +690,50 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {variants && (
+                <div className="mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[9px] font-black uppercase text-slate-400 tracking-widest">
+                      Variantes ({variants.filter(v => v?.status === 'done').length}/{VARIANT_COUNT})
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {variants.map((v, idx) => {
+                      const isSelected = idx === selectedVariantIdx && v?.status === 'done';
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => selectVariant(idx)}
+                          disabled={v?.status !== 'done'}
+                          title={v?.status === 'error' ? v.error : `Variante ${idx + 1}`}
+                          className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all ${
+                            isSelected
+                              ? 'border-indigo-600 ring-2 ring-indigo-200'
+                              : 'border-slate-100 hover:border-indigo-300'
+                          } ${v?.status !== 'done' ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                        >
+                          {v?.status === 'done' && (
+                            <img src={v.image} className="w-full h-full object-cover" alt={`Variante ${idx + 1}`} />
+                          )}
+                          {v?.status === 'pending' && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-slate-50">
+                              <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                            </div>
+                          )}
+                          {v?.status === 'error' && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-red-50">
+                              <AlertCircle className="w-4 h-4 text-red-400" />
+                            </div>
+                          )}
+                          <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/60 backdrop-blur-md rounded text-[7px] font-black uppercase text-white tracking-tighter">
+                            {idx + 1}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {generatedImage && (
                 <button
                   onClick={resetAll}
@@ -676,6 +775,8 @@ export default function App() {
                         setMode(item.mode || 'interior');
                         setObjective(item.objective || 'declutter');
                         setStyleId(item.styleId || null);
+                        setVariants(null);
+                        setSelectedVariantIdx(0);
                         setSelectedFile({ type: 'image/jpeg' });
                         setError(null);
                       }}
