@@ -12,7 +12,7 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
 
@@ -495,6 +495,16 @@ export default function App() {
               <KeyRound className="w-3.5 h-3.5" />
               {userApiKey ? 'Clé active' : 'Clé API'}
             </button>
+            <a
+              href="https://aistudio.google.com/usage"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Voir mon coût réel sur Google AI Studio"
+              className="flex items-center gap-1.5 text-[10px] font-bold px-3 py-2 rounded-xl transition-colors border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              Coût AI Studio
+            </a>
             {user && !user.isAnonymous ? (
               <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-4 rounded-2xl border border-slate-100">
                 {user.photoURL ? (
