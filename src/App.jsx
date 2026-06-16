@@ -138,8 +138,12 @@ export default function App() {
   const [compareMode, setCompareMode] = useState(false);
   const [variants, setVariants] = useState(null);
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
+  const [referenceFile, setReferenceFile] = useState(null);
+  const [referencePreview, setReferencePreview] = useState(null);
+  const [isConvertingRef, setIsConvertingRef] = useState(false);
 
   const fileInputRef = useRef(null);
+  const refInputRef = useRef(null);
 
   const effectiveApiKey = userApiKey || GEMINI_API_KEY_DEFAULT;
 
@@ -235,8 +239,11 @@ export default function App() {
     setCompareMode(false);
     setVariants(null);
     setSelectedVariantIdx(0);
+    setReferenceFile(null);
+    setReferencePreview(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (refInputRef.current) refInputRef.current.value = "";
   };
 
   const handleObjectiveChange = (newObj) => {
@@ -298,6 +305,65 @@ export default function App() {
     reader.readAsDataURL(fileToProcess);
   };
 
+  const handleReferenceChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setError(null);
+
+    const isHeic = file.name.toLowerCase().endsWith('.heic');
+    if (!file.type.startsWith('image/') && !isHeic) {
+      setError("Format du modèle non supporté. Utilisez JPG, PNG ou HEIC.");
+      if (refInputRef.current) refInputRef.current.value = "";
+      return;
+    }
+
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > MAX_RAW_UPLOAD_MB) {
+      setError(`Modèle trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo.`);
+      if (refInputRef.current) refInputRef.current.value = "";
+      return;
+    }
+
+    setIsConvertingRef(true);
+    let fileToProcess = file;
+
+    if (isHeic) {
+      try {
+        if (!window.heic2any) throw new Error("Script heic2any non chargé.");
+        const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
+        const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+        fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
+      } catch (err) {
+        console.error("Erreur conversion HEIC (modèle):", err);
+        setError("Impossible de convertir ce modèle HEIC.");
+        setIsConvertingRef(false);
+        return;
+      }
+    }
+
+    try {
+      fileToProcess = await compressImage(fileToProcess);
+    } catch (err) {
+      console.error("Erreur compression (modèle):", err);
+      setError("Impossible de compresser ce modèle.");
+      setIsConvertingRef(false);
+      return;
+    }
+
+    setIsConvertingRef(false);
+    setReferenceFile(fileToProcess);
+    const reader = new FileReader();
+    reader.onloadend = () => setReferencePreview(reader.result);
+    reader.readAsDataURL(fileToProcess);
+  };
+
+  const clearReference = () => {
+    setReferenceFile(null);
+    setReferencePreview(null);
+    if (refInputRef.current) refInputRef.current.value = "";
+  };
+
   const generateTransformation = async () => {
     if (!selectedFile || !originalPreview || !user) {
       setError("Veuillez importer une image avant de générer.");
@@ -345,15 +411,20 @@ export default function App() {
 
     const imageData = originalPreview.split(',')[1];
     const mimeType = selectedFile.type;
+    const referenceImageData = referencePreview ? referencePreview.split(',')[1] : undefined;
+    const referenceMimeType = referenceFile ? referenceFile.type : undefined;
+    const refClause = referenceImageData
+      ? " A reference style image is provided as IMAGE 2: draw inspiration from its mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying its structure or objects."
+      : "";
 
     const runVariant = async (idx) => {
       const hint = VARIANT_HINTS[idx] || '';
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, userApiKey: userApiKey || undefined })
+          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey: userApiKey || undefined })
         });
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
@@ -572,7 +643,40 @@ export default function App() {
               </div>
 
               <div>
-                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-3">2. Action souhaitée</h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                    2. Modèle d'inspiration (Optionnel)
+                  </h3>
+                  {referencePreview && (
+                    <button onClick={clearReference} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
+                      Retirer
+                    </button>
+                  )}
+                </div>
+                <div
+                  onClick={() => refInputRef.current?.click()}
+                  className="relative h-24 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
+                >
+                  <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
+                  {isConvertingRef ? (
+                    <div className="flex flex-col items-center text-indigo-500">
+                      <Loader2 className="w-5 h-5 animate-spin mb-1" />
+                      <p className="text-[9px] font-bold uppercase">Traitement...</p>
+                    </div>
+                  ) : referencePreview ? (
+                    <img src={referencePreview} className="w-full h-full object-cover" alt="Modèle d'inspiration" />
+                  ) : (
+                    <div className="flex flex-col items-center text-slate-400 group-hover:text-indigo-500 px-4 text-center">
+                      <ImageIcon className="w-5 h-5 mb-1" />
+                      <p className="text-[10px] font-bold">Importer une photo de référence</p>
+                      <p className="text-[9px] text-slate-300 mt-0.5">L'IA s'inspire de son style, ambiance et couleurs</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-3">3. Action souhaitée</h3>
                 <div className="grid grid-cols-2 gap-2">
                   {objectiveOptions.map(opt => (
                     <button
@@ -598,7 +702,7 @@ export default function App() {
 
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">3. Style (Optionnel)</h3>
+                  <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">4. Style (Optionnel)</h3>
                   {styleId && (
                     <button
                       onClick={() => setStyleId(null)}
@@ -627,7 +731,7 @@ export default function App() {
               </div>
 
               <div className="space-y-3">
-                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">4. Précisions (Optionnel)</h3>
+                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">5. Précisions (Optionnel)</h3>
                 <textarea
                   value={prompt}
                   onChange={e => setPrompt(e.target.value)}

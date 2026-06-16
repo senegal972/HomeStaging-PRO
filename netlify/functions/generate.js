@@ -21,7 +21,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Corps de requête invalide.' }) };
   }
 
-  const { prompt, mimeType, imageData, userApiKey } = body;
+  const { prompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey } = body;
 
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -35,13 +35,20 @@ exports.handler = async (event) => {
   const model = 'gemini-2.5-flash-image';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+  const parts = [
+    { text: prompt },
+    { text: 'IMAGE 1 (à transformer) — voici la photo source à modifier :' },
+    { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
+  ];
+
+  // Image de référence optionnelle : l'IA s'en inspire pour le style/ambiance
+  if (referenceImageData) {
+    parts.push({ text: 'IMAGE 2 (référence de style) — inspire-toi du style, de l\'ambiance, des matériaux et de la palette de couleurs de cette image de référence, mais applique-les à IMAGE 1 sans copier sa structure ni ses objets :' });
+    parts.push({ inlineData: { mimeType: referenceMimeType || 'image/jpeg', data: referenceImageData } });
+  }
+
   const payload = {
-    contents: [{
-      parts: [
-        { text: prompt },
-        { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
-      ]
-    }],
+    contents: [{ parts }],
     generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
   };
 
