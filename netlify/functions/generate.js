@@ -21,7 +21,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Corps de requête invalide.' }) };
   }
 
-  const { prompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey } = body;
+  const { prompt, mimeType, imageData, referenceImages, userApiKey } = body;
 
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -41,10 +41,13 @@ exports.handler = async (event) => {
     { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
   ];
 
-  // Image de référence optionnelle : l'IA s'en inspire pour le style/ambiance
-  if (referenceImageData) {
-    parts.push({ text: 'IMAGE 2 (référence de style) — inspire-toi du style, de l\'ambiance, des matériaux et de la palette de couleurs de cette image de référence, mais applique-les à IMAGE 1 sans copier sa structure ni ses objets :' });
-    parts.push({ inlineData: { mimeType: referenceMimeType || 'image/jpeg', data: referenceImageData } });
+  // Image(s) de référence optionnelles (style d'inspiration ou bâtiment à implanter)
+  if (Array.isArray(referenceImages)) {
+    referenceImages.forEach((ref, idx) => {
+      if (!ref?.data) return;
+      parts.push({ text: `IMAGE ${idx + 2} (référence) :` });
+      parts.push({ inlineData: { mimeType: ref.mimeType || 'image/jpeg', data: ref.data } });
+    });
   }
 
   const payload = {

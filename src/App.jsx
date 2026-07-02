@@ -12,7 +12,8 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3,
+  MapPin
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
 
@@ -42,6 +43,7 @@ const LS_KEY = 'homestaging_gemini_key';
 
 // === Validation upload ===
 const MAX_RAW_UPLOAD_MB = 15;
+const MAX_REFERENCE_IMAGES = 3;
 
 // === Variantes IA ===
 const VARIANT_COUNT = 4;
@@ -85,6 +87,29 @@ async function compressImage(file, maxDim = 1600, quality = 0.85) {
   });
 }
 
+// === Validation + conversion HEIC + compression, partagées pour tout upload ===
+async function processUploadedFile(file, label) {
+  const isHeic = file.name.toLowerCase().endsWith('.heic');
+  if (!file.type.startsWith('image/') && !isHeic) {
+    throw new Error(`Format ${label} non supporté. Utilisez JPG, PNG ou HEIC.`);
+  }
+
+  const sizeMB = file.size / (1024 * 1024);
+  if (sizeMB > MAX_RAW_UPLOAD_MB) {
+    throw new Error(`${label} trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo.`);
+  }
+
+  let fileToProcess = file;
+  if (isHeic) {
+    if (!window.heic2any) throw new Error(`Impossible de convertir ce fichier HEIC (${label}).`);
+    const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
+    const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+    fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
+  }
+
+  return compressImage(fileToProcess);
+}
+
 // === Styles prédéfinis par objectif ===
 const STYLES_BY_OBJECTIVE = {
   declutter: [
@@ -115,6 +140,11 @@ const STYLES_BY_OBJECTIVE = {
     { id: 'creole-moderne', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
     { id: 'mediterraneen-build', label: 'Méditerranéen', desc: 'Façade ocre, tuiles, arcades, volets bois' },
   ],
+  implant: [
+    { id: 'terrain-plat', label: 'Terrain plat', desc: 'Implantation de plain-pied, accès direct, jardin autour' },
+    { id: 'terrain-pente', label: 'Terrain en pente', desc: 'Soubassement ou pilotis adaptés au dénivelé du terrain' },
+    { id: 'creole-implant', label: 'Créole tropicale', desc: 'Varangue, toit pentu, intégration climat tropical' },
+  ],
 };
 
 export default function App() {
@@ -138,8 +168,7 @@ export default function App() {
   const [compareMode, setCompareMode] = useState(false);
   const [variants, setVariants] = useState(null);
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
-  const [referenceFile, setReferenceFile] = useState(null);
-  const [referencePreview, setReferencePreview] = useState(null);
+  const [referenceImages, setReferenceImages] = useState([]);
   const [isConvertingRef, setIsConvertingRef] = useState(false);
 
   const fileInputRef = useRef(null);
@@ -239,8 +268,7 @@ export default function App() {
     setCompareMode(false);
     setVariants(null);
     setSelectedVariantIdx(0);
-    setReferenceFile(null);
-    setReferencePreview(null);
+    setReferenceImages([]);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (refInputRef.current) refInputRef.current.value = "";
@@ -258,110 +286,57 @@ export default function App() {
     setGeneratedImage(null);
     setVariants(null);
     setError(null);
-
-    const isHeic = file.name.toLowerCase().endsWith('.heic');
-    if (!file.type.startsWith('image/') && !isHeic) {
-      setError("Format d'image non supporté. Utilisez JPG, PNG ou HEIC.");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    const sizeMB = file.size / (1024 * 1024);
-    if (sizeMB > MAX_RAW_UPLOAD_MB) {
-      setError(`Fichier trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo. Redimensionnez l'image avant de l'importer.`);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    setIsConverting(isHeic);
-    let fileToProcess = file;
-
-    if (isHeic) {
-      try {
-        if (!window.heic2any) throw new Error("Script heic2any non chargé.");
-        const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
-        const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-        fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
-      } catch (err) {
-        console.error("Erreur conversion HEIC:", err);
-        setError("Impossible de convertir ce fichier HEIC.");
-        setIsConverting(false);
-        return;
-      }
-      setIsConverting(false);
-    }
+    setIsConverting(true);
 
     try {
-      fileToProcess = await compressImage(fileToProcess);
+      const processed = await processUploadedFile(file, "de l'image");
+      setSelectedFile(processed);
+      const reader = new FileReader();
+      reader.onloadend = () => setOriginalPreview(reader.result);
+      reader.readAsDataURL(processed);
     } catch (err) {
-      console.error("Erreur compression:", err);
-      setError("Impossible de compresser cette image.");
-      return;
+      console.error("Erreur import image:", err);
+      setError(err.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } finally {
+      setIsConverting(false);
     }
-
-    setSelectedFile(fileToProcess);
-    const reader = new FileReader();
-    reader.onloadend = () => setOriginalPreview(reader.result);
-    reader.readAsDataURL(fileToProcess);
   };
 
   const handleReferenceChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    if (referenceImages.length >= MAX_REFERENCE_IMAGES) {
+      if (refInputRef.current) refInputRef.current.value = "";
+      return;
+    }
+
     setError(null);
-
-    const isHeic = file.name.toLowerCase().endsWith('.heic');
-    if (!file.type.startsWith('image/') && !isHeic) {
-      setError("Format du modèle non supporté. Utilisez JPG, PNG ou HEIC.");
-      if (refInputRef.current) refInputRef.current.value = "";
-      return;
-    }
-
-    const sizeMB = file.size / (1024 * 1024);
-    if (sizeMB > MAX_RAW_UPLOAD_MB) {
-      setError(`Modèle trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo.`);
-      if (refInputRef.current) refInputRef.current.value = "";
-      return;
-    }
-
     setIsConvertingRef(true);
-    let fileToProcess = file;
-
-    if (isHeic) {
-      try {
-        if (!window.heic2any) throw new Error("Script heic2any non chargé.");
-        const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
-        const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-        fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
-      } catch (err) {
-        console.error("Erreur conversion HEIC (modèle):", err);
-        setError("Impossible de convertir ce modèle HEIC.");
-        setIsConvertingRef(false);
-        return;
-      }
-    }
 
     try {
-      fileToProcess = await compressImage(fileToProcess);
+      const label = objective === 'implant' ? 'de la photo du bâtiment' : 'du modèle';
+      const processed = await processUploadedFile(file, label);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReferenceImages(prev => [
+          ...prev,
+          { id: `${Date.now()}-${Math.random()}`, file: processed, preview: reader.result }
+        ]);
+      };
+      reader.readAsDataURL(processed);
     } catch (err) {
-      console.error("Erreur compression (modèle):", err);
-      setError("Impossible de compresser ce modèle.");
+      console.error("Erreur import référence:", err);
+      setError(err.message);
+    } finally {
       setIsConvertingRef(false);
-      return;
+      if (refInputRef.current) refInputRef.current.value = "";
     }
-
-    setIsConvertingRef(false);
-    setReferenceFile(fileToProcess);
-    const reader = new FileReader();
-    reader.onloadend = () => setReferencePreview(reader.result);
-    reader.readAsDataURL(fileToProcess);
   };
 
-  const clearReference = () => {
-    setReferenceFile(null);
-    setReferencePreview(null);
-    if (refInputRef.current) refInputRef.current.value = "";
+  const removeReferenceImage = (id) => {
+    setReferenceImages(prev => prev.filter(r => r.id !== id));
   };
 
   const generateTransformation = async () => {
@@ -372,6 +347,11 @@ export default function App() {
 
     if (!effectiveApiKey) {
       setError("Clé API Gemini manquante. Cliquez sur l'icône clé 🔑 pour saisir votre clé Google AI Studio.");
+      return;
+    }
+
+    if (objective === 'implant' && referenceImages.length === 0) {
+      setError("Veuillez importer au moins une photo du bâtiment à implanter (étape 2) avant de générer.");
       return;
     }
 
@@ -387,6 +367,7 @@ export default function App() {
       else if (objective === 'furnish') defaultDetail = "Modern, elegant and cozy professional furniture staging.";
       else if (objective === 'renovate') defaultDetail = "Modern renovation with high-end materials.";
       else if (objective === 'build') defaultDetail = "Architectural building extension with modern glass and concrete.";
+      else if (objective === 'implant') defaultDetail = "Natural, realistic on-site integration of the building onto the plot, matching perspective, scale and lighting.";
     }
 
     let objectiveInstruction = "";
@@ -400,6 +381,9 @@ export default function App() {
       case 'build':
         objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
         break;
+      case 'implant':
+        objectiveInstruction = "SITE PLACEMENT TASK: Insert the exact building(s)/structure(s) shown in the reference photo(s) onto the land or terrain shown in IMAGE 1. Preserve their architecture, proportions and materials exactly as shown in the reference photos — do not redesign them. Adjust only perspective, scale, lighting and shadows so each structure blends naturally and realistically onto the terrain, as if photographed on site.";
+        break;
       default:
         objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
     }
@@ -411,10 +395,14 @@ export default function App() {
 
     const imageData = originalPreview.split(',')[1];
     const mimeType = selectedFile.type;
-    const referenceImageData = referencePreview ? referencePreview.split(',')[1] : undefined;
-    const referenceMimeType = referenceFile ? referenceFile.type : undefined;
-    const refClause = referenceImageData
-      ? " A reference style image is provided as IMAGE 2: draw inspiration from its mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying its structure or objects."
+    const referenceImagesPayload = referenceImages.map(r => ({
+      data: r.preview.split(',')[1],
+      mimeType: r.file.type
+    }));
+    const refClause = referenceImagesPayload.length > 0
+      ? (objective === 'implant'
+          ? " Additional reference photo(s) show the exact building(s)/structure(s) to insert onto the terrain in IMAGE 1: reproduce their architecture, proportions and materials precisely without redesigning them, only adapting perspective, scale, lighting and shadows so they blend naturally and realistically onto the terrain, as if photographed on site."
+          : " Additional reference photo(s) are provided: draw inspiration from their mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying their structure or objects.")
       : "";
 
     const runVariant = async (idx) => {
@@ -424,7 +412,7 @@ export default function App() {
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey: userApiKey || undefined })
+          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImages: referenceImagesPayload, userApiKey: userApiKey || undefined })
         });
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
@@ -506,6 +494,7 @@ export default function App() {
     { id: 'furnish', label: 'Aménager', icon: <Layout className="w-3 h-3" />, desc: 'Ajoute des meubles' },
     { id: 'renovate', label: 'Rénover', icon: <Brush className="w-3 h-3" />, desc: 'Changer le style' },
     { id: 'build', label: 'Construire', icon: <Hammer className="w-3 h-3" />, desc: 'Nouveau bâtiment' },
+    { id: 'implant', label: 'Implanter', icon: <MapPin className="w-3 h-3" />, desc: 'Poser un bâtiment sur un terrain' },
   ];
 
   return (
@@ -629,7 +618,7 @@ export default function App() {
                 {isConverting ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
                     <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
-                    <p className="text-[10px] font-bold uppercase">Conversion HEIC...</p>
+                    <p className="text-[10px] font-bold uppercase">Traitement...</p>
                   </div>
                 ) : originalPreview ? (
                   <img src={originalPreview} className="w-full h-full object-cover" alt="Original" />
@@ -645,34 +634,51 @@ export default function App() {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                    2. Modèle d'inspiration (Optionnel)
+                    {objective === 'implant' ? '2. Bâtiment(s) à implanter' : "2. Modèle(s) d'inspiration (Optionnel)"}
                   </h3>
-                  {referencePreview && (
-                    <button onClick={clearReference} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
-                      Retirer
-                    </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-slate-300">{referenceImages.length}/{MAX_REFERENCE_IMAGES}</span>
+                    {referenceImages.length > 0 && (
+                      <button onClick={() => setReferenceImages([])} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
+                        Tout retirer
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {referenceImages.map(ref => (
+                    <div key={ref.id} className="relative h-20 rounded-2xl overflow-hidden border border-slate-100 group">
+                      <img src={ref.preview} className="w-full h-full object-cover" alt="Référence" />
+                      <button
+                        onClick={() => removeReferenceImage(ref.id)}
+                        className="absolute top-1 right-1 p-1 bg-black/60 rounded-lg text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                  {referenceImages.length < MAX_REFERENCE_IMAGES && (
+                    <div
+                      onClick={() => refInputRef.current?.click()}
+                      className="relative h-20 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
+                    >
+                      <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
+                      {isConvertingRef ? (
+                        <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                      ) : (
+                        <div className="flex flex-col items-center text-slate-400 group-hover:text-indigo-500">
+                          <ImageIcon className="w-4 h-4 mb-1" />
+                          <p className="text-[8px] font-bold uppercase">Ajouter</p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-                <div
-                  onClick={() => refInputRef.current?.click()}
-                  className="relative h-24 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
-                >
-                  <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
-                  {isConvertingRef ? (
-                    <div className="flex flex-col items-center text-indigo-500">
-                      <Loader2 className="w-5 h-5 animate-spin mb-1" />
-                      <p className="text-[9px] font-bold uppercase">Traitement...</p>
-                    </div>
-                  ) : referencePreview ? (
-                    <img src={referencePreview} className="w-full h-full object-cover" alt="Modèle d'inspiration" />
-                  ) : (
-                    <div className="flex flex-col items-center text-slate-400 group-hover:text-indigo-500 px-4 text-center">
-                      <ImageIcon className="w-5 h-5 mb-1" />
-                      <p className="text-[10px] font-bold">Importer une photo de référence</p>
-                      <p className="text-[9px] text-slate-300 mt-0.5">L'IA s'inspire de son style, ambiance et couleurs</p>
-                    </div>
-                  )}
-                </div>
+                <p className="text-[9px] text-slate-300 mt-2">
+                  {objective === 'implant'
+                    ? "Importez la ou les photos du bâtiment (façade, plan) à positionner naturellement sur le terrain de la photo 1."
+                    : "L'IA s'inspire de leur style, ambiance et couleurs, sans copier leur structure."}
+                </p>
               </div>
 
               <div>
@@ -892,6 +898,7 @@ export default function App() {
                         setVariants(null);
                         setSelectedVariantIdx(0);
                         setSelectedFile({ type: 'image/jpeg' });
+                        setReferenceImages([]);
                         setError(null);
                       }}
                       className="relative rounded-2xl overflow-hidden border border-slate-100 cursor-pointer shadow-sm hover:shadow-lg hover:border-indigo-200 transition-all active:scale-[0.98]"
