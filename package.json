@@ -1,6 +1,6 @@
 {
   "name": "homestaging-pro",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "HomeStaging PRO — Transformation d'images immobilières par IA (OPTIMMO DOM)",
   "private": true,
   "scripts": {
