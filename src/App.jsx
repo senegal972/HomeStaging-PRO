@@ -407,7 +407,8 @@ export default function App() {
 
     const runVariant = async (idx) => {
       const hint = VARIANT_HINTS[idx] || '';
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      const preservation = " STRICT PRESERVATION: Keep the exact same framing, angle, zoom and aspect ratio as IMAGE 1 and show the FULL original scene — never crop, zoom in or make the terrain and its surroundings (neighbouring houses, vegetation, roads, sky) disappear. Change ONLY what is requested; do not invent or add anything that was not asked for (no extra garage, floor, extension, pool or building).";
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${preservation} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
@@ -801,7 +802,7 @@ export default function App() {
                   compareMode && originalPreview ? (
                     <CompareSlider before={originalPreview} after={generatedImage} />
                   ) : (
-                    <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                    <img src={generatedImage} className="max-w-full max-h-full w-auto h-auto object-contain" alt="Rendu IA" />
                   )
                 ) : (
                   <div className="text-center text-slate-300 p-10">
