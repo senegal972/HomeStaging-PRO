@@ -13,9 +13,10 @@ import {
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
   KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3,
-  MapPin
+  MapPin, Pencil, Undo2, Trash2, Check
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
+import ZoneDraw from './ZoneDraw';
 
 // === CONFIGURATION Firebase ===
 const FIREBASE_CONFIGURED = !!(
@@ -170,9 +171,13 @@ export default function App() {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
   const [referenceImages, setReferenceImages] = useState([]);
   const [isConvertingRef, setIsConvertingRef] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawTool, setDrawTool] = useState('brush');
+  const [hasDrawing, setHasDrawing] = useState(false);
 
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
+  const zoneDrawRef = useRef(null);
 
   const effectiveApiKey = userApiKey || GEMINI_API_KEY_DEFAULT;
 
@@ -269,6 +274,8 @@ export default function App() {
     setVariants(null);
     setSelectedVariantIdx(0);
     setReferenceImages([]);
+    setDrawMode(false);
+    setHasDrawing(false);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (refInputRef.current) refInputRef.current.value = "";
@@ -285,6 +292,8 @@ export default function App() {
 
     setGeneratedImage(null);
     setVariants(null);
+    setDrawMode(false);
+    setHasDrawing(false);
     setError(null);
     setIsConverting(true);
 
@@ -405,15 +414,30 @@ export default function App() {
           : " Additional reference photo(s) are provided: draw inspiration from their mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying their structure or objects.")
       : "";
 
+    // Zone cible dessinée à la main : on envoie une copie annotée de la photo
+    // et on restreint la transformation à l'intérieur du tracé rouge.
+    let zoneImagePayload = null;
+    if (hasDrawing && zoneDrawRef.current && !zoneDrawRef.current.isEmpty()) {
+      try {
+        const annotated = await zoneDrawRef.current.exportComposite();
+        if (annotated) zoneImagePayload = { data: annotated.split(',')[1], mimeType: 'image/jpeg' };
+      } catch (zoneErr) {
+        console.error("Erreur export zone dessinée:", zoneErr);
+      }
+    }
+    const zoneClause = zoneImagePayload
+      ? " A TARGET ZONE has been hand-drawn in red on the annotated copy of the source photo: apply the requested modification ONLY inside that red zone. Everything outside the zone must remain strictly identical to IMAGE 1. Never reproduce the red strokes or markings in the output."
+      : "";
+
     const runVariant = async (idx) => {
       const hint = VARIANT_HINTS[idx] || '';
       const preservation = " STRICT PRESERVATION: Keep the exact same framing, angle, zoom and aspect ratio as IMAGE 1 and show the FULL original scene — never crop, zoom in or make the terrain and its surroundings (neighbouring houses, vegetation, roads, sky) disappear. Change ONLY what is requested; do not invent or add anything that was not asked for (no extra garage, floor, extension, pool or building).";
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${preservation} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause}${zoneClause} Design details: ${finalDetails}.${hint}${preservation} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImages: referenceImagesPayload, userApiKey: userApiKey || undefined })
+          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImages: referenceImagesPayload, zoneImage: zoneImagePayload || undefined, userApiKey: userApiKey || undefined })
         });
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
@@ -608,30 +632,111 @@ export default function App() {
               <div className="flex justify-between items-center">
                 <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">1. Photo à traiter</h3>
                 {originalPreview && (
-                  <button onClick={resetAll} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
-                    Supprimer
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { setDrawMode(v => !v); setDrawTool('brush'); }}
+                      className={`flex items-center gap-1 text-[9px] font-bold uppercase tracking-tighter transition-colors ${
+                        drawMode ? 'text-indigo-600' : hasDrawing ? 'text-red-500 hover:text-red-600' : 'text-slate-400 hover:text-indigo-600'
+                      }`}
+                    >
+                      <Pencil className="w-3 h-3" />
+                      {drawMode ? 'Terminer' : hasDrawing ? 'Modifier la zone' : 'Dessiner la zone'}
+                    </button>
+                    <button onClick={resetAll} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
+                      Supprimer
+                    </button>
+                  </div>
                 )}
               </div>
 
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="relative aspect-video rounded-3xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group"
-              >
-                <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
-                {isConverting ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
-                    <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
-                    <p className="text-[10px] font-bold uppercase">Traitement...</p>
-                  </div>
-                ) : originalPreview ? (
-                  <img src={originalPreview} className="w-full h-full object-cover" alt="Original" />
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
-                    <Upload className="w-8 h-8 mb-2" />
-                    <p className="text-xs font-bold">Importer un fichier</p>
-                    <p className="text-[10px] text-slate-300 mt-1">JPG, PNG, HEIC supportés</p>
-                  </div>
+              <div>
+                <div
+                  onClick={() => { if (!drawMode) fileInputRef.current?.click(); }}
+                  className={`relative aspect-video rounded-3xl border-2 overflow-hidden transition-all bg-slate-50 group ${
+                    drawMode
+                      ? 'border-indigo-400'
+                      : 'border-dashed border-slate-200 cursor-pointer hover:border-indigo-400'
+                  }`}
+                >
+                  <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
+                  {isConverting ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
+                      <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+                      <p className="text-[10px] font-bold uppercase">Traitement...</p>
+                    </div>
+                  ) : originalPreview ? (
+                    <>
+                      <img
+                        src={originalPreview}
+                        className={`w-full h-full ${drawMode || hasDrawing ? 'object-contain' : 'object-cover'}`}
+                        alt="Original"
+                      />
+                      <ZoneDraw
+                        ref={zoneDrawRef}
+                        src={originalPreview}
+                        active={drawMode}
+                        tool={drawTool}
+                        onChange={setHasDrawing}
+                      />
+                      {drawMode && (
+                        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-black/70 backdrop-blur-md rounded-xl p-1.5 shadow-lg">
+                          <button
+                            onClick={() => setDrawTool('brush')}
+                            title="Pinceau"
+                            className={`p-1.5 rounded-lg transition-colors ${drawTool === 'brush' ? 'bg-red-500 text-white' : 'text-white/70 hover:text-white'}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setDrawTool('eraser')}
+                            title="Gomme"
+                            className={`p-1.5 rounded-lg transition-colors ${drawTool === 'eraser' ? 'bg-white text-slate-900' : 'text-white/70 hover:text-white'}`}
+                          >
+                            <Eraser className="w-3.5 h-3.5" />
+                          </button>
+                          <div className="w-px h-4 bg-white/20 mx-0.5" />
+                          <button
+                            onClick={() => zoneDrawRef.current?.undo()}
+                            title="Annuler le dernier trait"
+                            className="p-1.5 rounded-lg text-white/70 hover:text-white transition-colors"
+                          >
+                            <Undo2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => zoneDrawRef.current?.clear()}
+                            title="Tout effacer"
+                            className="p-1.5 rounded-lg text-white/70 hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <div className="w-px h-4 bg-white/20 mx-0.5" />
+                          <button
+                            onClick={() => setDrawMode(false)}
+                            title="Terminer le dessin"
+                            className="p-1.5 rounded-lg text-green-400 hover:text-green-300 transition-colors"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
+                      <Upload className="w-8 h-8 mb-2" />
+                      <p className="text-xs font-bold">Importer un fichier</p>
+                      <p className="text-[10px] text-slate-300 mt-1">JPG, PNG, HEIC supportés</p>
+                    </div>
+                  )}
+                </div>
+                {drawMode && (
+                  <p className="text-[9px] text-indigo-500 font-bold mt-2">
+                    ✏️ Entourez ou surlignez la zone à modifier — au stylet, au doigt ou à la souris.
+                  </p>
+                )}
+                {!drawMode && hasDrawing && (
+                  <p className="text-[9px] text-red-500 font-bold mt-2">
+                    🎯 Zone cible définie — l'IA appliquera la transformation uniquement dans la zone rouge.
+                  </p>
                 )}
               </div>
 
