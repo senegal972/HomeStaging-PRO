@@ -21,7 +21,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Corps de requête invalide.' }) };
   }
 
-  const { prompt, mimeType, imageData, referenceImages, userApiKey } = body;
+  const { prompt, mimeType, imageData, referenceImages, zoneImage, userApiKey } = body;
 
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -55,12 +55,25 @@ exports.handler = async (event) => {
     { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
   ];
 
+  let nextImageIndex = 2;
+
+  // Zone cible optionnelle : copie de la photo source avec la zone à modifier
+  // dessinée à la main en rouge. La transformation doit rester dans ce tracé.
+  if (zoneImage?.data) {
+    parts.push({
+      text: `IMAGE ${nextImageIndex} (target zone) — same photo as IMAGE 1 with the ZONE TO MODIFY hand-drawn in red. Apply the requested transformation ONLY inside that red zone; everything outside it must remain strictly identical to IMAGE 1. Never reproduce the red strokes or markings in the output:`
+    });
+    parts.push({ inlineData: { mimeType: zoneImage.mimeType || 'image/jpeg', data: zoneImage.data } });
+    nextImageIndex++;
+  }
+
   // Image(s) de référence optionnelles (style d'inspiration ou bâtiment à implanter)
   if (Array.isArray(referenceImages)) {
-    referenceImages.forEach((ref, idx) => {
+    referenceImages.forEach((ref) => {
       if (!ref?.data) return;
-      parts.push({ text: `IMAGE ${idx + 2} (référence) :` });
+      parts.push({ text: `IMAGE ${nextImageIndex} (référence) :` });
       parts.push({ inlineData: { mimeType: ref.mimeType || 'image/jpeg', data: ref.data } });
+      nextImageIndex++;
     });
   }
 
