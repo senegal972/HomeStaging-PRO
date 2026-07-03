@@ -407,7 +407,8 @@ export default function App() {
 
     const runVariant = async (idx) => {
       const hint = VARIANT_HINTS[idx] || '';
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      const preservation = " STRICT PRESERVATION: Keep the exact same framing, angle, zoom and aspect ratio as IMAGE 1 and show the FULL original scene — never crop, zoom in or make the terrain and its surroundings (neighbouring houses, vegetation, roads, sky) disappear. Change ONLY what is requested; do not invent or add anything that was not asked for (no extra garage, floor, extension, pool or building).";
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${preservation} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
@@ -513,6 +514,9 @@ export default function App() {
               <div className="flex flex-col gap-0.5">
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
                   <Lock className="w-3 h-3 text-green-500" /> Session Privée Gemini
+                  <span className="text-[8px] font-semibold text-slate-300 normal-case tracking-normal whitespace-nowrap">
+                    v{__APP_VERSION__} — MAJ {__APP_UPDATED__}
+                  </span>
                 </p>
                 <p className="text-[9px] font-black text-slate-500 uppercase tracking-tighter">
                   OPTIMMO DOM — 483 Av. Victor Coridun, 97200 Fort-de-France — 0696 93 80 99
@@ -761,7 +765,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 flex flex-col min-h-[400px]">
+            <section className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 flex flex-col self-start w-full">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Résultat IA</h3>
                 {generatedImage && (
@@ -788,7 +792,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <div className="flex-1 rounded-3xl bg-slate-50 overflow-hidden border border-slate-100 flex items-center justify-center relative shadow-inner">
+              <div className="w-full aspect-video rounded-3xl bg-slate-50 overflow-hidden border border-slate-100 flex items-center justify-center relative shadow-inner">
                 {isGenerating ? (
                   <div className="text-center p-8">
                     <div className="relative inline-block mb-4">
@@ -801,7 +805,7 @@ export default function App() {
                   compareMode && originalPreview ? (
                     <CompareSlider before={originalPreview} after={generatedImage} />
                   ) : (
-                    <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                    <img src={generatedImage} className="max-w-full max-h-full w-auto h-auto object-contain" alt="Rendu IA" />
                   )
                 ) : (
                   <div className="text-center text-slate-300 p-10">

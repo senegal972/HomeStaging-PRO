@@ -52,7 +52,7 @@ export default function CompareSlider({ before, after, beforeLabel = 'Avant', af
         src={after}
         alt={afterLabel}
         draggable={false}
-        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+        className="absolute inset-0 w-full h-full object-contain pointer-events-none"
       />
       {/* Image avant (top, clippée par position) */}
       <div
@@ -63,7 +63,7 @@ export default function CompareSlider({ before, after, beforeLabel = 'Avant', af
           src={before}
           alt={beforeLabel}
           draggable={false}
-          className="absolute inset-0 w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full object-contain"
         />
       </div>
 

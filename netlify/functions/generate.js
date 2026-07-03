@@ -35,7 +35,21 @@ exports.handler = async (event) => {
   const model = 'gemini-2.5-flash-image';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+  // Garde-fous globaux appliqués à CHAQUE génération (anti-hallucination).
+  // Empêche le modèle d'inventer des éléments non demandés (garage, étage,
+  // extension…) et de recadrer / faire disparaître le décor d'origine.
+  const GUARDRAILS = [
+    'You are a professional real-estate home-staging image editor.',
+    'ABSOLUTE RULES — follow them strictly and never break them:',
+    '1. Modify ONLY what the instruction explicitly requests. Never invent, add or remove anything that was not asked for (no extra garage, no extra floor/storey, no extension, no pool, no fence, no additional building, room or furniture unless explicitly requested).',
+    '2. Faithfully preserve everything else from the source photo (IMAGE 1): the exact same camera framing, angle, zoom level, proportions and aspect ratio, and the whole surrounding scene (background, neighbouring houses, vegetation, roads, sky and terrain).',
+    '3. Never crop, never zoom in, never re-frame or change the composition of IMAGE 1. The output must show the FULL original scene at the same dimensions — the terrain and its surroundings must remain fully visible.',
+    '4. Keep every change realistic and physically plausible (correct perspective, scale, lighting and shadows).',
+    '5. Output ONLY the edited image — no added text, watermark or border.'
+  ].join('\n');
+
   const parts = [
+    { text: GUARDRAILS },
     { text: prompt },
     { text: 'IMAGE 1 (à transformer) — voici la photo source à modifier :' },
     { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
