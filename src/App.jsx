@@ -173,6 +173,7 @@ export default function App() {
   const [isConvertingRef, setIsConvertingRef] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawTool, setDrawTool] = useState('brush');
+  const [brushSize, setBrushSize] = useState(3);
   const [hasDrawing, setHasDrawing] = useState(false);
 
   const fileInputRef = useRef(null);
@@ -650,6 +651,64 @@ export default function App() {
               </div>
 
               <div>
+                {drawMode && originalPreview && (
+                  <div className="flex items-center justify-center gap-1 mb-2 bg-slate-100 border border-slate-200 rounded-xl p-1.5">
+                    <button
+                      onClick={() => setDrawTool('brush')}
+                      title="Stylet"
+                      className={`p-1.5 rounded-lg transition-colors ${drawTool === 'brush' ? 'bg-red-500 text-white' : 'text-slate-500 hover:text-slate-900'}`}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setDrawTool('eraser')}
+                      title="Gomme"
+                      className={`p-1.5 rounded-lg transition-colors ${drawTool === 'eraser' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'}`}
+                    >
+                      <Eraser className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    {[
+                      { px: 3, dot: 'w-[4px] h-[4px]', label: 'Trait fin' },
+                      { px: 8, dot: 'w-[7px] h-[7px]', label: 'Trait moyen' },
+                      { px: 16, dot: 'w-[11px] h-[11px]', label: 'Trait épais' },
+                    ].map(s => (
+                      <button
+                        key={s.px}
+                        onClick={() => setBrushSize(s.px)}
+                        title={s.label}
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                          brushSize === s.px ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900'
+                        }`}
+                      >
+                        <span className={`${s.dot} rounded-full bg-current`} />
+                      </button>
+                    ))}
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    <button
+                      onClick={() => zoneDrawRef.current?.undo()}
+                      title="Annuler le dernier trait"
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 transition-colors"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => zoneDrawRef.current?.clear()}
+                      title="Tout effacer"
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    <button
+                      onClick={() => setDrawMode(false)}
+                      title="Terminer le dessin"
+                      className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 transition-colors"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
                 <div
                   onClick={() => { if (!drawMode) fileInputRef.current?.click(); }}
                   className={`relative aspect-video rounded-3xl border-2 overflow-hidden transition-all bg-slate-50 group ${
@@ -676,49 +735,9 @@ export default function App() {
                         src={originalPreview}
                         active={drawMode}
                         tool={drawTool}
+                        brushSize={brushSize}
                         onChange={setHasDrawing}
                       />
-                      {drawMode && (
-                        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-black/70 backdrop-blur-md rounded-xl p-1.5 shadow-lg">
-                          <button
-                            onClick={() => setDrawTool('brush')}
-                            title="Pinceau"
-                            className={`p-1.5 rounded-lg transition-colors ${drawTool === 'brush' ? 'bg-red-500 text-white' : 'text-white/70 hover:text-white'}`}
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setDrawTool('eraser')}
-                            title="Gomme"
-                            className={`p-1.5 rounded-lg transition-colors ${drawTool === 'eraser' ? 'bg-white text-slate-900' : 'text-white/70 hover:text-white'}`}
-                          >
-                            <Eraser className="w-3.5 h-3.5" />
-                          </button>
-                          <div className="w-px h-4 bg-white/20 mx-0.5" />
-                          <button
-                            onClick={() => zoneDrawRef.current?.undo()}
-                            title="Annuler le dernier trait"
-                            className="p-1.5 rounded-lg text-white/70 hover:text-white transition-colors"
-                          >
-                            <Undo2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => zoneDrawRef.current?.clear()}
-                            title="Tout effacer"
-                            className="p-1.5 rounded-lg text-white/70 hover:text-red-400 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                          <div className="w-px h-4 bg-white/20 mx-0.5" />
-                          <button
-                            onClick={() => setDrawMode(false)}
-                            title="Terminer le dessin"
-                            className="p-1.5 rounded-lg text-green-400 hover:text-green-300 transition-colors"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
                     </>
                   ) : (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
