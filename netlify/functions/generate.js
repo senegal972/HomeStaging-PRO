@@ -21,7 +21,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Corps de requête invalide.' }) };
   }
 
-  const { prompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey } = body;
+  const { prompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey, analyze } = body;
 
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -29,6 +29,32 @@ exports.handler = async (event) => {
   }
   if (!imageData) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Image manquante.' }) };
+  }
+
+  // === PASSE 1 (analyse) : lecture du plan 2D, réponse TEXTE (carte des pièces) ===
+  if (analyze) {
+    const textModel = 'gemini-2.5-flash';
+    const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${apiKey}`;
+    const analyzePayload = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
+        ]
+      }],
+      generationConfig: { temperature: 0.2 }
+    };
+    try {
+      const up = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analyzePayload) });
+      const r = await up.json();
+      if (!up.ok) {
+        return { statusCode: up.status, headers, body: JSON.stringify({ error: `Erreur analyse Gemini : ${r?.error?.message || 'inconnue'}` }) };
+      }
+      const text = r.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') || '';
+      return { statusCode: 200, headers, body: JSON.stringify({ text }) };
+    } catch (err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `Erreur serveur analyse : ${err.message}` }) };
+    }
   }
 
   // Modèle le plus récent supportant image en entrée + sortie

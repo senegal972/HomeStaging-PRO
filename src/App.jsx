@@ -442,13 +442,33 @@ export default function App() {
 
     const isFloorplan = mode === 'floorplan';
 
+    // PASSE 1 (plan 2D + aménager) : Gemini lit le plan → carte pièces→meubles.
+    // Ancre le placement pour que chaque meuble aille dans SA pièce (fix salon vide / meubles hors-murs).
+    let roomMapClause = "";
+    if (isFloorplan && objective !== 'declutter') {
+      try {
+        const analyzePrompt = "You are reading a 2D architectural floor plan image (top-down blueprint) with rooms labeled in French. List EVERY labeled room, with its approximate location in the image and the furniture that belongs to it. Output a concise plain-text list, ONE line per room, exact format: \"<room label> (<location, e.g. top-left / top-center / center / bottom-large / right-column>): <furniture to place>\". Use the printed label to decide furniture (Chambre/Suite parentale = bed + nightstands + wardrobe; Salon cuisine = sofa + coffee table + dining table & chairs + kitchen units; SDB = bathtub/shower + sink; WC = toilet; Dressing = closets; Buanderie = washing machine). Then, on a final separate line, describe any LARGE BLANK AREA that is OUTSIDE the exterior walls (a courtyard, terrace, or empty margin that is NOT an enclosed labeled room) as: \"OUTSIDE/VOID: leave completely empty\". Do not invent rooms that are not labeled.";
+        const ares = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ analyze: true, prompt: analyzePrompt, mimeType, imageData, userApiKey: userApiKey || undefined })
+        });
+        const adata = await ares.json();
+        if (ares.ok && adata.text) {
+          roomMapClause = " ROOM MAP — place furniture STRICTLY inside each room's own walls, put ONLY the furniture listed for that room, and leave every OUTSIDE/VOID area and any unlabeled space completely EMPTY. Do not place any furniture outside the exterior walls:\n" + adata.text + "\n";
+        }
+      } catch (e) {
+        console.error('Analyse plan échouée (passe 1):', e);
+      }
+    }
+
     const runVariant = async (idx) => {
       // Plan 2D : pas de hints déco (varier = risque de dériver la structure du plan).
       const hint = isFloorplan ? '' : (VARIANT_HINTS[idx] || '');
       const renderClause = isFloorplan
         ? " Rendering: clean flat 2D top-down floor-plan style, orthographic, crisp lines."
         : " Photography: Professional architectural style, 8k, sharp focus.";
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${lockClause}${renderClause} Output: ONLY the transformed image, without text.`;
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${lockClause}${roomMapClause}${renderClause} Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
