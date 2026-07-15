@@ -91,10 +91,10 @@ async function generateWithFallback(apiKey, wantImage, payload) {
   return { ok: false, status: 502, error: lastError };
 }
 
-// Garde-fous globaux appliqués à CHAQUE génération d'image (anti-hallucination).
+// Garde-fous PHOTO : anti-hallucination pour le home-staging sur photo réelle.
 // Empêche le modèle d'inventer des éléments non demandés (garage, étage,
 // extension…) et de recadrer / faire disparaître le décor d'origine.
-const GUARDRAILS = [
+const GUARDRAILS_PHOTO = [
   'You are a professional real-estate home-staging image editor.',
   'ABSOLUTE RULES — follow them strictly and never break them:',
   '1. Modify ONLY what the instruction explicitly requests. Never invent, add or remove anything that was not asked for (no extra garage, no extra floor/storey, no extension, no pool, no fence, no additional building, room or furniture unless explicitly requested).',
@@ -102,6 +102,22 @@ const GUARDRAILS = [
   '3. Never crop, never zoom in, never re-frame or change the composition of IMAGE 1. The output must show the FULL original scene at the same dimensions — the terrain and its surroundings must remain fully visible.',
   '4. Keep every change realistic and physically plausible (correct perspective, scale, lighting and shadows).',
   '5. Output ONLY the edited image — no added text, watermark or border.'
+].join('\n');
+
+// Garde-fous PLAN -> 3D : ici, changer le point de vue EST la tâche demandée.
+// Appliquer les règles photo (« ne recadre pas, garde le même angle ») rendrait la
+// consigne contradictoire : le modèle lâcherait alors la contrainte la plus coûteuse,
+// c'est-à-dire la géométrie du plan. On garde donc la fidélité, on libère la caméra.
+const GUARDRAILS_PLAN3D = [
+  'You are a professional architectural visualisation artist.',
+  'IMAGE 1 is a 2D architectural floor plan (a technical drawing seen from above), NOT a photograph.',
+  'Your task is to rebuild that plan in 3D. Changing the viewpoint is REQUIRED and expected.',
+  'ABSOLUTE RULES — follow them strictly and never break them:',
+  '1. The floor plan geometry is the ground truth. Reproduce the SAME layout: same outer shape and proportions, same wall positions, same room count, same room sizes relative to each other, same adjacency between rooms, same door and window openings.',
+  '2. Never invent, add, remove, split or merge rooms, walls or levels. Never add a storey, a garage or an extension that is not on the plan. Build exactly what the plan shows and nothing more.',
+  '3. Each room must keep the function printed on the plan: a bedroom stays a bedroom, the living/kitchen area stays the living/kitchen area.',
+  '4. Keep everything realistic and physically plausible (correct perspective, scale, lighting and shadows).',
+  '5. Output ONLY the rendered image — no added text, label, watermark or border.'
 ].join('\n');
 
 exports.handler = async (event) => {
@@ -129,6 +145,7 @@ exports.handler = async (event) => {
 
   const {
     prompt, mimeType, imageData, referenceImages, zoneImage, userApiKey, analyze,
+    guardrails, // 'photo' (défaut) | 'plan3d'
     referenceImageData, referenceMimeType // format hérité, encore accepté
   } = body;
 
@@ -166,10 +183,15 @@ exports.handler = async (event) => {
   }
 
   // === PASSE 2 (génération image) ===
+  const isPlan3d = guardrails === 'plan3d';
   const parts = [
-    { text: GUARDRAILS },
+    { text: isPlan3d ? GUARDRAILS_PLAN3D : GUARDRAILS_PHOTO },
     { text: prompt },
-    { text: 'IMAGE 1 (à transformer) — voici la photo source à modifier :' },
+    {
+      text: isPlan3d
+        ? 'IMAGE 1 (plan source) — le plan 2D à reconstruire en volume :'
+        : 'IMAGE 1 (à transformer) — voici la photo source à modifier :'
+    },
     { inlineData: { mimeType: mimeType || 'image/jpeg', data: imageData } }
   ];
 

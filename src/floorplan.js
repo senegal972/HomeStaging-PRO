@@ -219,6 +219,35 @@ Rules:
 - NEVER include the blank area outside the exterior walls, courtyards, terraces, or page margins.
 - Do not invent rooms. Do not merge or split rooms. Copy each label exactly as printed.`;
 
+// Décrit la géométrie lue sur le plan, pour ancrer le rendu 3D.
+// Sans cette carte, le modèle « invente » une maison plausible au lieu de reconstruire
+// CELLE du plan : c'est la cause des rendus 3D qui ne ressemblent pas à la source.
+export function roomMapText(rooms) {
+  if (!rooms?.length) return '';
+  const line = (r) => {
+    const [ymin, xmin, ymax, xmax] = r.box;
+    const vert = ymin < 380 ? 'top' : ymin > 620 ? 'bottom' : 'middle';
+    const horiz = xmin < 380 ? 'left' : xmin > 620 ? 'right' : 'centre';
+    const area = Math.round(((ymax - ymin) * (xmax - xmin)) / 1000);
+    return `- "${r.label}" — ${vert}-${horiz} of the plan (relative footprint ${area}/1000)`;
+  };
+  return `\n\nROOM LAYOUT read from the plan — reproduce EXACTLY this set of rooms, in these relative positions and relative sizes, and nothing else:\n${rooms.map(line).join('\n')}\n`;
+}
+
+export function render3dPrompt(roomsClause, styleClause, refClause, details) {
+  return `ARCHITECTURAL 3D VISUALISATION TASK — convert a 2D floor plan into a 3D render.
+
+IMAGE 1 is a 2D architectural floor plan seen from above. Rebuild the dwelling it describes in three dimensions and render it as a realistic AXONOMETRIC (isometric) doll-house view seen from above at roughly a 45° angle, with the ROOF REMOVED so the whole interior is visible — a cutaway 3D view.
+${roomsClause}
+GEOMETRY IS THE PRIORITY: the result must be recognisable as THIS plan and no other. Same outer footprint and proportions, same wall positions, same room count, same relative room sizes, same adjacency, same door and window openings. Do not redesign the dwelling, do not add or remove rooms, walls or levels.
+
+Furnish and inhabit each room according to its function on the plan: welcoming living area, contemporary open kitchen, made-up bedrooms, coherent bathrooms. Realistic materials: light walls, parquet or tiling depending on the space, simple elegant contemporary furniture.${styleClause}${refClause}
+
+Extend the dwelling naturally outdoors: terraces where the plan shows them, a credible garden, natural lawn, and a few Caribbean trees — notably palm trees with sculptural trunks and vivid foliage — arranged around the house and the terrace for a warm, sunny atmosphere.${details}
+
+Final rendering: high-end architectural visualisation, detailed and photorealistic, warm and luminous, like a contemporary architecture image made to present a real-estate project. Output ONLY the image, with no text or labels.`;
+}
+
 export function furnishRoomPrompt(label, furniture, styleClause, refClause) {
   return `SINGLE ROOM FURNISHING TASK on a 2D architectural floor plan crop, seen strictly from above (orthographic top-down).
 

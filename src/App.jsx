@@ -20,7 +20,7 @@ import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
-  ANALYZE_ROOMS_PROMPT, furnishRoomPrompt
+  ANALYZE_ROOMS_PROMPT, furnishRoomPrompt, render3dPrompt, roomMapText
 } from './floorplan';
 
 // === CONFIGURATION Firebase ===
@@ -152,6 +152,12 @@ const STYLES_BY_OBJECTIVE = {
     { id: 'loft', label: 'Loft new-yorkais', desc: 'Béton ciré, verrière atelier, métal noir' },
     { id: 'japonais', label: 'Japandi', desc: 'Bois clair, ligne basse, papier de riz, zen' },
     { id: 'colonial', label: 'Colonial créole', desc: 'Bois sombre, persiennes, ventilateurs, charme antillais' },
+  ],
+  render3d: [
+    { id: 'creole-moderne-3d', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
+    { id: 'contemporain-3d', label: 'Contemporain', desc: 'Volumes blancs, baies vitrées, toit plat' },
+    { id: 'tropical-3d', label: 'Tropical', desc: 'Bois exotique, débords de toit, végétation luxuriante' },
+    { id: 'mediterraneen-3d', label: 'Méditerranéen', desc: 'Façade ocre, tuiles, arcades, volets bois' },
   ],
   build: [
     { id: 'villa-contemporaine', label: 'Villa contemporaine', desc: 'Volumes blancs, baies vitrées, toit plat, piscine' },
@@ -484,6 +490,102 @@ export default function App() {
     }
   };
 
+  // === Plan 2D -> rendu 3D axonométrique ===
+  // La géométrie est d'abord LUE sur le plan (passe 1) puis imposée par écrit au modèle.
+  // Sans cette carte il reconstruit une maison plausible mais pas la tienne.
+  const runRender3d = async () => {
+    const imageData = originalPreview.split(',')[1];
+    const mimeType = selectedFile.type;
+    const referenceImagesPayload = referenceImages.map(r => ({
+      data: r.preview.split(',')[1],
+      mimeType: r.file.type
+    }));
+    const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
+    const styleClause = selectedStyle ? ` Architectural style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
+    const refClause = referenceImagesPayload.length > 0
+      ? " Reference photo(s) are provided: draw inspiration from their architectural style, materials and colour palette."
+      : "";
+    const details = prompt.trim() ? `\n\nAdditional requirements: ${prompt.trim()}` : "";
+
+    // Passe 1 : lecture de la géométrie.
+    setPlanProgress({ phase: 'analyse', done: 0, total: 0 });
+    let roomsClause = "";
+    try {
+      const ares = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analyze: true, prompt: ANALYZE_ROOMS_PROMPT, mimeType, imageData, userApiKey: userApiKey || undefined })
+      });
+      const adata = await ares.json();
+      if (ares.ok && adata.text) roomsClause = roomMapText(parseRooms(adata.text));
+    } catch (err) {
+      // Sans la carte le rendu reste possible, simplement moins fidèle : on continue.
+      console.error('Lecture du plan échouée, rendu 3D non ancré:', err);
+    }
+
+    setPlanProgress(null);
+    setVariants(Array.from({ length: VARIANT_COUNT }, () => ({ status: 'pending' })));
+
+    const fullPrompt = render3dPrompt(roomsClause, styleClause, refClause, details);
+
+    const runOne = async (idx) => {
+      // Variantes 3D : on fait varier le rendu, jamais la géométrie.
+      const angles = [
+        '',
+        ' Camera: axonometric view from a slightly higher angle, warm afternoon sunlight.',
+        ' Camera: axonometric view rotated slightly, bright midday light with soft shadows.',
+        ' Camera: axonometric view, golden-hour lighting with long soft shadows.',
+      ];
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: fullPrompt + (angles[idx] || ''),
+            mimeType, imageData,
+            referenceImages: referenceImagesPayload,
+            guardrails: 'plan3d',
+            userApiKey: userApiKey || undefined
+          })
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
+        if (!result.imageData) throw new Error("L'IA n'a pas retourné d'image.");
+        if (result.model) setUsedModel(result.model);
+        const img = `data:${result.mimeType || 'image/png'};base64,${result.imageData}`;
+        setVariants(v => { if (!v) return v; const n = [...v]; n[idx] = { status: 'done', image: img }; return n; });
+        return { idx, image: img };
+      } catch (err) {
+        console.error(`Erreur variante 3D ${idx}:`, err);
+        setVariants(v => { if (!v) return v; const n = [...v]; n[idx] = { status: 'error', error: err.message }; return n; });
+        return null;
+      }
+    };
+
+    const results = await Promise.all(Array.from({ length: VARIANT_COUNT }, (_, i) => runOne(i)));
+    const okOnes = results.filter(Boolean);
+    if (okOnes.length === 0) throw new Error("Aucun rendu 3D n'a pu être généré.");
+
+    setGeneratedImage(okOnes[0].image);
+    setSelectedVariantIdx(okOnes[0].idx);
+
+    if (user && !user.isAnonymous) {
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'designs'), {
+          before: originalPreview,
+          after: okOnes[0].image,
+          prompt: prompt || "Plan 2D → rendu 3D",
+          mode: 'floorplan',
+          objective: 'render3d',
+          styleId: styleId || null,
+          createdAt: serverTimestamp()
+        });
+      } catch (fireErr) {
+        console.error("Erreur sauvegarde Firestore:", fireErr);
+      }
+    }
+  };
+
   const generateTransformation = async () => {
     if (!selectedFile || !originalPreview || !user) {
       setError("Veuillez importer une image avant de générer.");
@@ -502,16 +604,19 @@ export default function App() {
 
     // Plan 2D + aménager/rénover : pipeline pièce par pièce (pas de variantes — 1 appel
     // par pièce, x4 variantes exploserait le quota).
-    if (mode === 'floorplan' && objective !== 'declutter') {
+    // Plan 2D + vue 3D : chemin dédié, sans les garde-fous photo (qui interdiraient
+    // justement le changement de point de vue).
+    if (mode === 'floorplan' && (objective === 'furnish' || objective === 'renovate' || objective === 'render3d')) {
       setIsGenerating(true);
       setError(null);
       setGeneratedImage(null);
       setVariants(null);
       setSelectedVariantIdx(0);
       try {
-        await runFloorplanPipeline();
+        if (objective === 'render3d') await runRender3d();
+        else await runFloorplanPipeline();
       } catch (err) {
-        console.error("Erreur pipeline plan 2D:", err);
+        console.error("Erreur plan 2D:", err);
         setError(`Erreur : ${err.message}`);
       } finally {
         setPlanProgress(null);
@@ -688,13 +793,25 @@ export default function App() {
     link.click();
   };
 
-  const objectiveOptions = [
+  // `modes` restreint une action aux modes où elle a un sens : proposer "Implanter" sur
+  // un plan 2D ou "Vue 3D" sur une photo n'aboutit qu'à des consignes contradictoires.
+  const ALL_OBJECTIVES = [
     { id: 'declutter', label: 'Nettoyer / Vider', icon: <Eraser className="w-3 h-3" />, desc: 'Supprime les objets' },
     { id: 'furnish', label: 'Aménager', icon: <Layout className="w-3 h-3" />, desc: 'Ajoute des meubles' },
     { id: 'renovate', label: 'Rénover', icon: <Brush className="w-3 h-3" />, desc: 'Changer le style' },
-    { id: 'build', label: 'Construire', icon: <Hammer className="w-3 h-3" />, desc: 'Nouveau bâtiment' },
-    { id: 'implant', label: 'Implanter', icon: <MapPin className="w-3 h-3" />, desc: 'Poser un bâtiment sur un terrain' },
+    { id: 'build', label: 'Construire', icon: <Hammer className="w-3 h-3" />, desc: 'Nouveau bâtiment', modes: ['interior', 'exterior'] },
+    { id: 'implant', label: 'Implanter', icon: <MapPin className="w-3 h-3" />, desc: 'Poser un bâtiment sur un terrain', modes: ['interior', 'exterior'] },
+    { id: 'render3d', label: 'Vue 3D', icon: <Boxes className="w-3 h-3" />, desc: 'Plan 2D → maison en volume', modes: ['floorplan'] },
   ];
+  const objectiveOptions = ALL_OBJECTIVES.filter(o => !o.modes || o.modes.includes(mode));
+
+  // Si l'action courante n'existe pas dans le nouveau mode, on retombe sur une action valide.
+  useEffect(() => {
+    if (!objectiveOptions.some(o => o.id === objective)) {
+      setObjective(mode === 'floorplan' ? 'furnish' : 'declutter');
+      setStyleId(null);
+    }
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans pb-20">
