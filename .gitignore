@@ -2,9 +2,14 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# Secrets. `.env` seul ne couvrait pas .env.production : un `git add .` aurait
+# publié les clés sur ce dépôt public. On ignore tous les .env sauf l'exemple.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
 .claude/
 .netlify/
 .vercel
+graphify-out/
