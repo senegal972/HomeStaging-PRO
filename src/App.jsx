@@ -12,9 +12,11 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3, Map, Maximize2
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3,
+  MapPin, Pencil, Undo2, Trash2, Check, Map, Maximize2
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
+import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
@@ -47,10 +49,12 @@ const LS_KEY = 'homestaging_gemini_key';
 
 // === Validation upload ===
 const MAX_RAW_UPLOAD_MB = 15;
+const MAX_REFERENCE_IMAGES = 3;
 
 // === Variantes IA ===
 // Hints NON-structurels : varient déco/palette/lumière SANS toucher murs, pièces, structure.
-// (Anciens hints "different layout / creative composition" provoquaient des dérives : pièces divisées, etc.)
+// (Les anciens hints "different layout / creative composition" provoquaient des dérives :
+// pièces divisées, salon transformé en chambre, etc.)
 const VARIANT_COUNT = 4;
 const VARIANT_HINTS = [
   '',
@@ -61,6 +65,14 @@ const VARIANT_HINTS = [
 
 // Verrou structurel : empêche l'IA d'ajouter/supprimer/diviser/fusionner des pièces ou murs.
 const STRUCTURE_LOCK = " STRICT STRUCTURAL CONSTRAINTS: Preserve the existing architecture exactly — same walls, same number of rooms, same room boundaries, same doors and windows. Keep every existing text label unchanged and in place. NEVER split, merge, add, or remove rooms or walls. NEVER convert a room into a different type of room unless explicitly instructed in the details.";
+
+// Noms de code publics des modèles image Google.
+const MODEL_LABELS = {
+  'gemini-3-pro-image-preview': 'Nano Banana Pro',
+  'gemini-2.5-flash-image': 'Nano Banana',
+  'gemini-2.0-flash-preview-image-generation': 'Gemini 2.0 Image',
+};
+const modelLabel = (id) => (id ? (MODEL_LABELS[id] || id) : null);
 
 // === Compression image côté client ===
 // Redimensionne à 1600px max + JPEG q=0.85 pour rester sous la limite payload Netlify (~6 MB)
@@ -95,13 +107,28 @@ async function compressImage(file, maxDim = 1600, quality = 0.85) {
   });
 }
 
-// Noms de code publics des modèles image Google.
-const MODEL_LABELS = {
-  'gemini-3-pro-image-preview': 'Nano Banana Pro',
-  'gemini-2.5-flash-image': 'Nano Banana',
-  'gemini-2.0-flash-preview-image-generation': 'Gemini 2.0 Image',
-};
-const modelLabel = (id) => (id ? (MODEL_LABELS[id] || id) : null);
+// === Validation + conversion HEIC + compression, partagées pour tout upload ===
+async function processUploadedFile(file, label) {
+  const isHeic = file.name.toLowerCase().endsWith('.heic');
+  if (!file.type.startsWith('image/') && !isHeic) {
+    throw new Error(`Format ${label} non supporté. Utilisez JPG, PNG ou HEIC.`);
+  }
+
+  const sizeMB = file.size / (1024 * 1024);
+  if (sizeMB > MAX_RAW_UPLOAD_MB) {
+    throw new Error(`${label} trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo.`);
+  }
+
+  let fileToProcess = file;
+  if (isHeic) {
+    if (!window.heic2any) throw new Error(`Impossible de convertir ce fichier HEIC (${label}).`);
+    const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
+    const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+    fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
+  }
+
+  return compressImage(fileToProcess);
+}
 
 // === Styles prédéfinis par objectif ===
 const STYLES_BY_OBJECTIVE = {
@@ -133,6 +160,11 @@ const STYLES_BY_OBJECTIVE = {
     { id: 'creole-moderne', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
     { id: 'mediterraneen-build', label: 'Méditerranéen', desc: 'Façade ocre, tuiles, arcades, volets bois' },
   ],
+  implant: [
+    { id: 'terrain-plat', label: 'Terrain plat', desc: 'Implantation de plain-pied, accès direct, jardin autour' },
+    { id: 'terrain-pente', label: 'Terrain en pente', desc: 'Soubassement ou pilotis adaptés au dénivelé du terrain' },
+    { id: 'creole-implant', label: 'Créole tropicale', desc: 'Varangue, toit pentu, intégration climat tropical' },
+  ],
 };
 
 export default function App() {
@@ -156,15 +188,19 @@ export default function App() {
   const [compareMode, setCompareMode] = useState(false);
   const [variants, setVariants] = useState(null);
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
-  const [referenceFile, setReferenceFile] = useState(null);
-  const [referencePreview, setReferencePreview] = useState(null);
+  const [referenceImages, setReferenceImages] = useState([]);
   const [isConvertingRef, setIsConvertingRef] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawTool, setDrawTool] = useState('brush');
+  const [brushSize, setBrushSize] = useState(3);
+  const [hasDrawing, setHasDrawing] = useState(false);
   const [planProgress, setPlanProgress] = useState(null);
   const [usedModel, setUsedModel] = useState(null);
   const [lightbox, setLightbox] = useState(null);
 
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
+  const zoneDrawRef = useRef(null);
 
   const effectiveApiKey = userApiKey || GEMINI_API_KEY_DEFAULT;
 
@@ -260,10 +296,12 @@ export default function App() {
     setCompareMode(false);
     setVariants(null);
     setSelectedVariantIdx(0);
-    setReferenceFile(null);
-    setReferencePreview(null);
+    setReferenceImages([]);
+    setDrawMode(false);
+    setHasDrawing(false);
     setUsedModel(null);
     setLightbox(null);
+    setPlanProgress(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (refInputRef.current) refInputRef.current.value = "";
@@ -280,111 +318,60 @@ export default function App() {
 
     setGeneratedImage(null);
     setVariants(null);
+    setDrawMode(false);
+    setHasDrawing(false);
     setError(null);
-
-    const isHeic = file.name.toLowerCase().endsWith('.heic');
-    if (!file.type.startsWith('image/') && !isHeic) {
-      setError("Format d'image non supporté. Utilisez JPG, PNG ou HEIC.");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    const sizeMB = file.size / (1024 * 1024);
-    if (sizeMB > MAX_RAW_UPLOAD_MB) {
-      setError(`Fichier trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo. Redimensionnez l'image avant de l'importer.`);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    setIsConverting(isHeic);
-    let fileToProcess = file;
-
-    if (isHeic) {
-      try {
-        if (!window.heic2any) throw new Error("Script heic2any non chargé.");
-        const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
-        const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-        fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
-      } catch (err) {
-        console.error("Erreur conversion HEIC:", err);
-        setError("Impossible de convertir ce fichier HEIC.");
-        setIsConverting(false);
-        return;
-      }
-      setIsConverting(false);
-    }
+    setIsConverting(true);
 
     try {
-      fileToProcess = await compressImage(fileToProcess);
+      const processed = await processUploadedFile(file, "de l'image");
+      setSelectedFile(processed);
+      const reader = new FileReader();
+      reader.onloadend = () => setOriginalPreview(reader.result);
+      reader.readAsDataURL(processed);
     } catch (err) {
-      console.error("Erreur compression:", err);
-      setError("Impossible de compresser cette image.");
-      return;
+      console.error("Erreur import image:", err);
+      setError(err.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } finally {
+      setIsConverting(false);
     }
-
-    setSelectedFile(fileToProcess);
-    const reader = new FileReader();
-    reader.onloadend = () => setOriginalPreview(reader.result);
-    reader.readAsDataURL(fileToProcess);
   };
 
   const handleReferenceChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    if (referenceImages.length >= MAX_REFERENCE_IMAGES) {
+      if (refInputRef.current) refInputRef.current.value = "";
+      return;
+    }
+
     setError(null);
-
-    const isHeic = file.name.toLowerCase().endsWith('.heic');
-    if (!file.type.startsWith('image/') && !isHeic) {
-      setError("Format du modèle non supporté. Utilisez JPG, PNG ou HEIC.");
-      if (refInputRef.current) refInputRef.current.value = "";
-      return;
-    }
-
-    const sizeMB = file.size / (1024 * 1024);
-    if (sizeMB > MAX_RAW_UPLOAD_MB) {
-      setError(`Modèle trop volumineux (${sizeMB.toFixed(1)} Mo). Limite : ${MAX_RAW_UPLOAD_MB} Mo.`);
-      if (refInputRef.current) refInputRef.current.value = "";
-      return;
-    }
-
     setIsConvertingRef(true);
-    let fileToProcess = file;
-
-    if (isHeic) {
-      try {
-        if (!window.heic2any) throw new Error("Script heic2any non chargé.");
-        const convertedBlob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
-        const resultBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-        fileToProcess = new File([resultBlob], file.name.replace(/\.[^/.]+$/, ".jpg"), { type: "image/jpeg" });
-      } catch (err) {
-        console.error("Erreur conversion HEIC (modèle):", err);
-        setError("Impossible de convertir ce modèle HEIC.");
-        setIsConvertingRef(false);
-        return;
-      }
-    }
 
     try {
-      fileToProcess = await compressImage(fileToProcess);
+      const label = objective === 'implant' ? 'de la photo du bâtiment' : 'du modèle';
+      const processed = await processUploadedFile(file, label);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReferenceImages(prev => [
+          ...prev,
+          { id: `${Date.now()}-${Math.random()}`, file: processed, preview: reader.result }
+        ]);
+      };
+      reader.readAsDataURL(processed);
     } catch (err) {
-      console.error("Erreur compression (modèle):", err);
-      setError("Impossible de compresser ce modèle.");
+      console.error("Erreur import référence:", err);
+      setError(err.message);
+    } finally {
       setIsConvertingRef(false);
-      return;
+      if (refInputRef.current) refInputRef.current.value = "";
     }
-
-    setIsConvertingRef(false);
-    setReferenceFile(fileToProcess);
-    const reader = new FileReader();
-    reader.onloadend = () => setReferencePreview(reader.result);
-    reader.readAsDataURL(fileToProcess);
   };
 
-  const clearReference = () => {
-    setReferenceFile(null);
-    setReferencePreview(null);
-    if (refInputRef.current) refInputRef.current.value = "";
+  const removeReferenceImage = (id) => {
+    setReferenceImages(prev => prev.filter(r => r.id !== id));
   };
 
   // === Pipeline plan 2D : analyse -> crop par pièce -> aménagement isolé -> recomposition ===
@@ -393,12 +380,14 @@ export default function App() {
   const runFloorplanPipeline = async () => {
     const imageData = originalPreview.split(',')[1];
     const mimeType = selectedFile.type;
-    const referenceImageData = referencePreview ? referencePreview.split(',')[1] : undefined;
-    const referenceMimeType = referenceFile ? referenceFile.type : undefined;
+    const referenceImagesPayload = referenceImages.map(r => ({
+      data: r.preview.split(',')[1],
+      mimeType: r.file.type
+    }));
     const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
     const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
-    const refClause = referenceImageData
-      ? " A reference style image is provided as IMAGE 2: draw inspiration from its materials and color palette only."
+    const refClause = referenceImagesPayload.length > 0
+      ? " Reference photo(s) are provided: draw inspiration from their materials and color palette only."
       : "";
     const extraDetails = prompt.trim() ? ` Additional details: ${prompt.trim()}.` : "";
 
@@ -439,8 +428,7 @@ export default function App() {
             prompt: furnishRoomPrompt(room.label, room.furniture + extraDetails, styleClause, refClause),
             mimeType: 'image/jpeg',
             imageData: cropped.dataUrl.split(',')[1],
-            referenceImageData,
-            referenceMimeType,
+            referenceImages: referenceImagesPayload,
             userApiKey: userApiKey || undefined
           })
         });
@@ -501,6 +489,11 @@ export default function App() {
       return;
     }
 
+    if (objective === 'implant' && referenceImages.length === 0) {
+      setError("Veuillez importer au moins une photo du bâtiment à implanter (étape 2) avant de générer.");
+      return;
+    }
+
     // Plan 2D + aménager/rénover : pipeline pièce par pièce (pas de variantes — 1 appel
     // par pièce, x4 variantes exploserait le quota).
     if (mode === 'floorplan' && objective !== 'declutter') {
@@ -533,88 +526,85 @@ export default function App() {
       else if (objective === 'furnish') defaultDetail = "Modern, elegant and cozy professional furniture staging.";
       else if (objective === 'renovate') defaultDetail = "Modern renovation with high-end materials.";
       else if (objective === 'build') defaultDetail = "Architectural building extension with modern glass and concrete.";
+      else if (objective === 'implant') defaultDetail = "Natural, realistic on-site integration of the building onto the plot, matching perspective, scale and lighting.";
     }
 
     let objectiveInstruction = "";
-    let contextPrefix = "";
-    let lockClause = "";
-
-    if (mode === 'floorplan') {
-      // Aménagement de plan 2D : tâche distincte du home-staging photo.
-      contextPrefix = "Top-down 2D architectural floor plan (blueprint) with labeled rooms, viewed strictly from above";
-      if (objective === 'declutter') {
-        objectiveInstruction = "2D FLOOR PLAN TASK: This is a top-down 2D architectural floor plan. Remove any furniture symbols and leave each room empty. Keep the top-down orthographic view.";
-      } else {
-        objectiveInstruction = "2D FLOOR PLAN FURNISHING TASK: This is a top-down 2D architectural floor plan seen from above. Add realistic TOP-VIEW furniture symbols INSIDE each existing room, appropriate to that room's printed label (bed and wardrobe in a bedroom, sofa and TV in the living room/salon, table and chairs in the dining room, worktop in the kitchen, fixtures in the bathroom). Stay in a flat 2D top-down orthographic view — do NOT produce a 3D or perspective render.";
-      }
-      // Le plan 2D exige toujours le verrou structurel.
-      lockClause = STRUCTURE_LOCK + " This is a floor plan: respect each room's printed label and furnish it accordingly — a 'salon' stays a salon, a 'chambre' stays a chambre.";
-    } else {
-      contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
-      switch(objective) {
-        case 'declutter':
-          objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
-          break;
-        case 'furnish':
-          objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
-          break;
-        case 'build':
-          objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
-          break;
-        default:
-          objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
-      }
-      // Verrou structurel pour aménager/rénover (pas pour vider ni construire).
-      if (objective === 'furnish' || objective === 'renovate') {
-        lockClause = STRUCTURE_LOCK;
-      }
+    switch(objective) {
+      case 'declutter':
+        objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
+        break;
+      case 'furnish':
+        objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
+        break;
+      case 'build':
+        objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
+        break;
+      case 'implant':
+        objectiveInstruction = "SITE PLACEMENT TASK: Insert the exact building(s)/structure(s) shown in the reference photo(s) onto the land or terrain shown in IMAGE 1. Preserve their architecture, proportions and materials exactly as shown in the reference photos — do not redesign them. Adjust only perspective, scale, lighting and shadows so each structure blends naturally and realistically onto the terrain, as if photographed on site.";
+        break;
+      default:
+        objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
     }
+
+    // Plan 2D : un plan n'est pas une photo — le dire évite que le modèle le réinterprète.
+    // (Mode Plan 2D + Vider passe ici ; Aménager/Rénover partent dans le pipeline dédié.)
+    if (mode === 'floorplan') {
+      objectiveInstruction = "2D FLOOR PLAN TASK: This is a top-down 2D architectural floor plan. Remove any furniture symbols and leave each room empty. Keep the top-down orthographic view.";
+    }
+
+    // Verrou structurel pour aménager/rénover (pas pour vider ni construire/implanter).
+    const lockClause = (objective === 'furnish' || objective === 'renovate') ? STRUCTURE_LOCK : "";
+
+    const contextPrefix = mode === 'floorplan'
+      ? "Top-down 2D architectural floor plan (blueprint) with labeled rooms, viewed strictly from above"
+      : mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
     const finalDetails = prompt.trim() || defaultDetail;
     const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
     const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
 
     const imageData = originalPreview.split(',')[1];
     const mimeType = selectedFile.type;
-    const referenceImageData = referencePreview ? referencePreview.split(',')[1] : undefined;
-    const referenceMimeType = referenceFile ? referenceFile.type : undefined;
-    const refClause = referenceImageData
-      ? " A reference style image is provided as IMAGE 2: draw inspiration from its mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying its structure or objects."
+    const referenceImagesPayload = referenceImages.map(r => ({
+      data: r.preview.split(',')[1],
+      mimeType: r.file.type
+    }));
+    const refClause = referenceImagesPayload.length > 0
+      ? (objective === 'implant'
+          ? " Additional reference photo(s) show the exact building(s)/structure(s) to insert onto the terrain in IMAGE 1: reproduce their architecture, proportions and materials precisely without redesigning them, only adapting perspective, scale, lighting and shadows so they blend naturally and realistically onto the terrain, as if photographed on site."
+          : " Additional reference photo(s) are provided: draw inspiration from their mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying their structure or objects.")
+      : "";
+
+    // Zone cible dessinée à la main : on envoie une copie annotée de la photo
+    // et on restreint la transformation à l'intérieur du tracé rouge.
+    let zoneImagePayload = null;
+    if (hasDrawing && zoneDrawRef.current && !zoneDrawRef.current.isEmpty()) {
+      try {
+        const annotated = await zoneDrawRef.current.exportComposite();
+        if (annotated) zoneImagePayload = { data: annotated.split(',')[1], mimeType: 'image/jpeg' };
+      } catch (zoneErr) {
+        console.error("Erreur export zone dessinée:", zoneErr);
+      }
+    }
+    const zoneClause = zoneImagePayload
+      ? " A TARGET ZONE has been hand-drawn in red on the annotated copy of the source photo: apply the requested modification ONLY inside that red zone. Everything outside the zone must remain strictly identical to IMAGE 1. Never reproduce the red strokes or markings in the output."
       : "";
 
     const isFloorplan = mode === 'floorplan';
 
-    // PASSE 1 (plan 2D + aménager) : Gemini lit le plan → carte pièces→meubles.
-    // Ancre le placement pour que chaque meuble aille dans SA pièce (fix salon vide / meubles hors-murs).
-    let roomMapClause = "";
-    if (isFloorplan && objective !== 'declutter') {
-      try {
-        const analyzePrompt = "You are reading a 2D architectural floor plan image (top-down blueprint) with rooms labeled in French. List EVERY labeled room, with its approximate location in the image and the furniture that belongs to it. Output a concise plain-text list, ONE line per room, exact format: \"<room label> (<location, e.g. top-left / top-center / center / bottom-large / right-column>): <furniture to place>\". Use the printed label to decide furniture (Chambre/Suite parentale = bed + nightstands + wardrobe; Salon cuisine = sofa + coffee table + dining table & chairs + kitchen units; SDB = bathtub/shower + sink; WC = toilet; Dressing = closets; Buanderie = washing machine). Then, on a final separate line, describe any LARGE BLANK AREA that is OUTSIDE the exterior walls (a courtyard, terrace, or empty margin that is NOT an enclosed labeled room) as: \"OUTSIDE/VOID: leave completely empty\". Do not invent rooms that are not labeled.";
-        const ares = await fetch('/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ analyze: true, prompt: analyzePrompt, mimeType, imageData, userApiKey: userApiKey || undefined })
-        });
-        const adata = await ares.json();
-        if (ares.ok && adata.text) {
-          roomMapClause = " ROOM MAP — place furniture STRICTLY inside each room's own walls, put ONLY the furniture listed for that room, and leave every OUTSIDE/VOID area and any unlabeled space completely EMPTY. Do not place any furniture outside the exterior walls:\n" + adata.text + "\n";
-        }
-      } catch (e) {
-        console.error('Analyse plan échouée (passe 1):', e);
-      }
-    }
-
     const runVariant = async (idx) => {
       // Plan 2D : pas de hints déco (varier = risque de dériver la structure du plan).
       const hint = isFloorplan ? '' : (VARIANT_HINTS[idx] || '');
+      const preservation = " STRICT PRESERVATION: Keep the exact same framing, angle, zoom and aspect ratio as IMAGE 1 and show the FULL original scene — never crop, zoom in or make the terrain and its surroundings (neighbouring houses, vegetation, roads, sky) disappear. Change ONLY what is requested; do not invent or add anything that was not asked for (no extra garage, floor, extension, pool or building).";
       const renderClause = isFloorplan
         ? " Rendering: clean flat 2D top-down floor-plan style, orthographic, crisp lines."
         : " Photography: Professional architectural style, 8k, sharp focus.";
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${lockClause}${roomMapClause}${renderClause} Output: ONLY the transformed image, without text.`;
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause}${zoneClause} Design details: ${finalDetails}.${hint}${lockClause}${preservation}${renderClause} Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImageData, referenceMimeType, userApiKey: userApiKey || undefined })
+          body: JSON.stringify({ prompt: fullPrompt, mimeType, imageData, referenceImages: referenceImagesPayload, zoneImage: zoneImagePayload || undefined, userApiKey: userApiKey || undefined })
         });
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
@@ -697,6 +687,7 @@ export default function App() {
     { id: 'furnish', label: 'Aménager', icon: <Layout className="w-3 h-3" />, desc: 'Ajoute des meubles' },
     { id: 'renovate', label: 'Rénover', icon: <Brush className="w-3 h-3" />, desc: 'Changer le style' },
     { id: 'build', label: 'Construire', icon: <Hammer className="w-3 h-3" />, desc: 'Nouveau bâtiment' },
+    { id: 'implant', label: 'Implanter', icon: <MapPin className="w-3 h-3" />, desc: 'Poser un bâtiment sur un terrain' },
   ];
 
   return (
@@ -715,6 +706,9 @@ export default function App() {
               <div className="flex flex-col gap-0.5">
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
                   <Lock className="w-3 h-3 text-green-500" /> Session Privée Gemini
+                  <span className="text-[8px] font-semibold text-slate-300 normal-case tracking-normal whitespace-nowrap">
+                    v{__APP_VERSION__} — MAJ {__APP_UPDATED__}
+                  </span>
                 </p>
                 <p className="text-[9px] font-black text-slate-500 uppercase tracking-tighter">
                   OPTIMMO DOM — 483 Av. Victor Coridun, 97200 Fort-de-France — 0696 93 80 99
@@ -812,73 +806,180 @@ export default function App() {
               <div className="flex justify-between items-center">
                 <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">1. Photo à traiter</h3>
                 {originalPreview && (
-                  <button onClick={resetAll} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
-                    Supprimer
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { setDrawMode(v => !v); setDrawTool('brush'); }}
+                      className={`flex items-center gap-1 text-[9px] font-bold uppercase tracking-tighter transition-colors ${
+                        drawMode ? 'text-indigo-600' : hasDrawing ? 'text-red-500 hover:text-red-600' : 'text-slate-400 hover:text-indigo-600'
+                      }`}
+                    >
+                      <Pencil className="w-3 h-3" />
+                      {drawMode ? 'Terminer' : hasDrawing ? 'Modifier la zone' : 'Dessiner la zone'}
+                    </button>
+                    <button onClick={resetAll} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
+                      Supprimer
+                    </button>
+                  </div>
                 )}
               </div>
 
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="relative aspect-video rounded-3xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group"
-              >
-                <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
-                {isConverting ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
-                    <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
-                    <p className="text-[10px] font-bold uppercase">Conversion HEIC...</p>
-                  </div>
-                ) : originalPreview ? (
-                  <>
-                    <img src={originalPreview} className="w-full h-full object-cover" alt="Original" />
+              <div>
+                {drawMode && originalPreview && (
+                  <div className="flex items-center justify-center gap-1 mb-2 bg-slate-100 border border-slate-200 rounded-xl p-1.5">
                     <button
-                      onClick={(e) => { e.stopPropagation(); setLightbox(originalPreview); }}
-                      title="Plein écran"
-                      className="absolute bottom-3 right-3 p-2 rounded-xl bg-black/60 backdrop-blur-md text-white hover:bg-black/80 transition-colors"
+                      onClick={() => setDrawTool('brush')}
+                      title="Stylet"
+                      className={`p-1.5 rounded-lg transition-colors ${drawTool === 'brush' ? 'bg-red-500 text-white' : 'text-slate-500 hover:text-slate-900'}`}
                     >
-                      <Maximize2 className="w-4 h-4" />
+                      <Pencil className="w-3.5 h-3.5" />
                     </button>
-                  </>
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
-                    <Upload className="w-8 h-8 mb-2" />
-                    <p className="text-xs font-bold">Importer un fichier</p>
-                    <p className="text-[10px] text-slate-300 mt-1">JPG, PNG, HEIC supportés</p>
+                    <button
+                      onClick={() => setDrawTool('eraser')}
+                      title="Gomme"
+                      className={`p-1.5 rounded-lg transition-colors ${drawTool === 'eraser' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'}`}
+                    >
+                      <Eraser className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    {[
+                      { px: 3, dot: 'w-[4px] h-[4px]', label: 'Trait fin' },
+                      { px: 8, dot: 'w-[7px] h-[7px]', label: 'Trait moyen' },
+                      { px: 16, dot: 'w-[11px] h-[11px]', label: 'Trait épais' },
+                    ].map(s => (
+                      <button
+                        key={s.px}
+                        onClick={() => setBrushSize(s.px)}
+                        title={s.label}
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                          brushSize === s.px ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900'
+                        }`}
+                      >
+                        <span className={`${s.dot} rounded-full bg-current`} />
+                      </button>
+                    ))}
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    <button
+                      onClick={() => zoneDrawRef.current?.undo()}
+                      title="Annuler le dernier trait"
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 transition-colors"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => zoneDrawRef.current?.clear()}
+                      title="Tout effacer"
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                    <button
+                      onClick={() => setDrawMode(false)}
+                      title="Terminer le dessin"
+                      className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 transition-colors"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
                   </div>
+                )}
+                <div
+                  onClick={() => { if (!drawMode) fileInputRef.current?.click(); }}
+                  className={`relative aspect-video rounded-3xl border-2 overflow-hidden transition-all bg-slate-50 group ${
+                    drawMode
+                      ? 'border-indigo-400'
+                      : 'border-dashed border-slate-200 cursor-pointer hover:border-indigo-400'
+                  }`}
+                >
+                  <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
+                  {isConverting ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
+                      <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+                      <p className="text-[10px] font-bold uppercase">Traitement...</p>
+                    </div>
+                  ) : originalPreview ? (
+                    <>
+                      <img
+                        src={originalPreview}
+                        className={`w-full h-full ${drawMode || hasDrawing ? 'object-contain' : 'object-cover'}`}
+                        alt="Original"
+                      />
+                      <ZoneDraw
+                        ref={zoneDrawRef}
+                        src={originalPreview}
+                        active={drawMode}
+                        tool={drawTool}
+                        brushSize={brushSize}
+                        onChange={setHasDrawing}
+                      />
+                    </>
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
+                      <Upload className="w-8 h-8 mb-2" />
+                      <p className="text-xs font-bold">Importer un fichier</p>
+                      <p className="text-[10px] text-slate-300 mt-1">JPG, PNG, HEIC supportés</p>
+                    </div>
+                  )}
+                </div>
+                {drawMode && (
+                  <p className="text-[9px] text-indigo-500 font-bold mt-2">
+                    ✏️ Entourez ou surlignez la zone à modifier — au stylet, au doigt ou à la souris.
+                  </p>
+                )}
+                {!drawMode && hasDrawing && (
+                  <p className="text-[9px] text-red-500 font-bold mt-2">
+                    🎯 Zone cible définie — l'IA appliquera la transformation uniquement dans la zone rouge.
+                  </p>
                 )}
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                    2. Modèle d'inspiration (Optionnel)
+                    {objective === 'implant' ? '2. Bâtiment(s) à implanter' : "2. Modèle(s) d'inspiration (Optionnel)"}
                   </h3>
-                  {referencePreview && (
-                    <button onClick={clearReference} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
-                      Retirer
-                    </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-slate-300">{referenceImages.length}/{MAX_REFERENCE_IMAGES}</span>
+                    {referenceImages.length > 0 && (
+                      <button onClick={() => setReferenceImages([])} className="text-[9px] font-bold text-red-400 hover:text-red-600 uppercase tracking-tighter transition-colors">
+                        Tout retirer
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {referenceImages.map(ref => (
+                    <div key={ref.id} className="relative h-20 rounded-2xl overflow-hidden border border-slate-100 group">
+                      <img src={ref.preview} className="w-full h-full object-cover" alt="Référence" />
+                      <button
+                        onClick={() => removeReferenceImage(ref.id)}
+                        className="absolute top-1 right-1 p-1 bg-black/60 rounded-lg text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                  {referenceImages.length < MAX_REFERENCE_IMAGES && (
+                    <div
+                      onClick={() => refInputRef.current?.click()}
+                      className="relative h-20 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
+                    >
+                      <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
+                      {isConvertingRef ? (
+                        <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                      ) : (
+                        <div className="flex flex-col items-center text-slate-400 group-hover:text-indigo-500">
+                          <ImageIcon className="w-4 h-4 mb-1" />
+                          <p className="text-[8px] font-bold uppercase">Ajouter</p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-                <div
-                  onClick={() => refInputRef.current?.click()}
-                  className="relative h-24 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
-                >
-                  <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
-                  {isConvertingRef ? (
-                    <div className="flex flex-col items-center text-indigo-500">
-                      <Loader2 className="w-5 h-5 animate-spin mb-1" />
-                      <p className="text-[9px] font-bold uppercase">Traitement...</p>
-                    </div>
-                  ) : referencePreview ? (
-                    <img src={referencePreview} className="w-full h-full object-cover" alt="Modèle d'inspiration" />
-                  ) : (
-                    <div className="flex flex-col items-center text-slate-400 group-hover:text-indigo-500 px-4 text-center">
-                      <ImageIcon className="w-5 h-5 mb-1" />
-                      <p className="text-[10px] font-bold">Importer une photo de référence</p>
-                      <p className="text-[9px] text-slate-300 mt-0.5">L'IA s'inspire de son style, ambiance et couleurs</p>
-                    </div>
-                  )}
-                </div>
+                <p className="text-[9px] text-slate-300 mt-2">
+                  {objective === 'implant'
+                    ? "Importez la ou les photos du bâtiment (façade, plan) à positionner naturellement sur le terrain de la photo 1."
+                    : "L'IA s'inspire de leur style, ambiance et couleurs, sans copier leur structure."}
+                </p>
               </div>
 
               <div>
@@ -961,7 +1062,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 flex flex-col min-h-[400px]">
+            <section className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 flex flex-col self-start w-full">
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-2">
                   <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Résultat IA</h3>
@@ -998,7 +1099,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <div className="flex-1 rounded-3xl bg-slate-50 overflow-hidden border border-slate-100 flex items-center justify-center relative shadow-inner">
+              <div className="w-full aspect-video rounded-3xl bg-slate-50 overflow-hidden border border-slate-100 flex items-center justify-center relative shadow-inner">
                 {isGenerating ? (
                   <div className="text-center p-8">
                     <div className="relative inline-block mb-4">
@@ -1031,9 +1132,9 @@ export default function App() {
                     <button
                       onClick={() => setLightbox(generatedImage)}
                       title="Cliquer pour agrandir"
-                      className="w-full h-full group/zoom cursor-zoom-in"
+                      className="w-full h-full flex items-center justify-center group/zoom cursor-zoom-in"
                     >
-                      <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                      <img src={generatedImage} className="max-w-full max-h-full w-auto h-auto object-contain" alt="Rendu IA" />
                       <span className="absolute bottom-3 right-3 p-2 rounded-xl bg-black/60 backdrop-blur-md text-white opacity-0 group-hover/zoom:opacity-100 transition-opacity">
                         <Maximize2 className="w-4 h-4" />
                       </span>
@@ -1134,6 +1235,7 @@ export default function App() {
                         setVariants(null);
                         setSelectedVariantIdx(0);
                         setSelectedFile({ type: 'image/jpeg' });
+                        setReferenceImages([]);
                         setError(null);
                       }}
                       className="relative rounded-2xl overflow-hidden border border-slate-100 cursor-pointer shadow-sm hover:shadow-lg hover:border-indigo-200 transition-all active:scale-[0.98]"
