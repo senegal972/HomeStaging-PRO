@@ -12,9 +12,10 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3, Map
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3, Map, Maximize2
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
+import Lightbox from './Lightbox';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
   ANALYZE_ROOMS_PROMPT, furnishRoomPrompt
@@ -94,6 +95,14 @@ async function compressImage(file, maxDim = 1600, quality = 0.85) {
   });
 }
 
+// Noms de code publics des modèles image Google.
+const MODEL_LABELS = {
+  'gemini-3-pro-image-preview': 'Nano Banana Pro',
+  'gemini-2.5-flash-image': 'Nano Banana',
+  'gemini-2.0-flash-preview-image-generation': 'Gemini 2.0 Image',
+};
+const modelLabel = (id) => (id ? (MODEL_LABELS[id] || id) : null);
+
 // === Styles prédéfinis par objectif ===
 const STYLES_BY_OBJECTIVE = {
   declutter: [
@@ -151,6 +160,8 @@ export default function App() {
   const [referencePreview, setReferencePreview] = useState(null);
   const [isConvertingRef, setIsConvertingRef] = useState(false);
   const [planProgress, setPlanProgress] = useState(null);
+  const [usedModel, setUsedModel] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
 
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
@@ -251,6 +262,8 @@ export default function App() {
     setSelectedVariantIdx(0);
     setReferenceFile(null);
     setReferencePreview(null);
+    setUsedModel(null);
+    setLightbox(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (refInputRef.current) refInputRef.current.value = "";
@@ -433,6 +446,7 @@ export default function App() {
         });
         const data = await res.json();
         if (!res.ok || !data.imageData) throw new Error(data.error || "pas d'image");
+        if (data.model) setUsedModel(data.model);
         return {
           imageDataUrl: `data:${data.mimeType || 'image/png'};base64,${data.imageData}`,
           crop: cropped.crop,
@@ -605,6 +619,7 @@ export default function App() {
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || 'Erreur inconnue');
         if (!result.imageData) throw new Error("L'IA n'a pas retourné d'image.");
+        if (result.model) setUsedModel(result.model);
         const img = `data:${result.mimeType || 'image/png'};base64,${result.imageData}`;
         setVariants(v => {
           if (!v) return v;
@@ -814,7 +829,16 @@ export default function App() {
                     <p className="text-[10px] font-bold uppercase">Conversion HEIC...</p>
                   </div>
                 ) : originalPreview ? (
-                  <img src={originalPreview} className="w-full h-full object-cover" alt="Original" />
+                  <>
+                    <img src={originalPreview} className="w-full h-full object-cover" alt="Original" />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setLightbox(originalPreview); }}
+                      title="Plein écran"
+                      className="absolute bottom-3 right-3 p-2 rounded-xl bg-black/60 backdrop-blur-md text-white hover:bg-black/80 transition-colors"
+                    >
+                      <Maximize2 className="w-4 h-4" />
+                    </button>
+                  </>
                 ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
                     <Upload className="w-8 h-8 mb-2" />
@@ -939,7 +963,17 @@ export default function App() {
 
             <section className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 flex flex-col min-h-[400px]">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Résultat IA</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Résultat IA</h3>
+                  {usedModel && (
+                    <span
+                      title={usedModel}
+                      className="px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-[8px] font-black uppercase tracking-tighter text-amber-700"
+                    >
+                      🍌 {modelLabel(usedModel)}
+                    </span>
+                  )}
+                </div>
                 {generatedImage && (
                   <div className="flex items-center gap-2">
                     {originalPreview && (
@@ -983,9 +1017,27 @@ export default function App() {
                   </div>
                 ) : generatedImage ? (
                   compareMode && originalPreview ? (
-                    <CompareSlider before={originalPreview} after={generatedImage} />
+                    <>
+                      <CompareSlider before={originalPreview} after={generatedImage} />
+                      <button
+                        onClick={() => setLightbox(generatedImage)}
+                        title="Plein écran"
+                        className="absolute bottom-3 right-3 z-10 p-2 rounded-xl bg-black/60 backdrop-blur-md text-white hover:bg-black/80 transition-colors"
+                      >
+                        <Maximize2 className="w-4 h-4" />
+                      </button>
+                    </>
                   ) : (
-                    <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                    <button
+                      onClick={() => setLightbox(generatedImage)}
+                      title="Cliquer pour agrandir"
+                      className="w-full h-full group/zoom cursor-zoom-in"
+                    >
+                      <img src={generatedImage} className="w-full h-full object-cover" alt="Rendu IA" />
+                      <span className="absolute bottom-3 right-3 p-2 rounded-xl bg-black/60 backdrop-blur-md text-white opacity-0 group-hover/zoom:opacity-100 transition-opacity">
+                        <Maximize2 className="w-4 h-4" />
+                      </span>
+                    </button>
                   )
                 ) : (
                   <div className="text-center text-slate-300 p-10">
@@ -1110,6 +1162,15 @@ export default function App() {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #CBD5E1; }
       `}</style>
+
+      {lightbox && (
+        <Lightbox
+          src={lightbox}
+          alt="Aperçu plein écran"
+          onClose={() => setLightbox(null)}
+          onDownload={lightbox === generatedImage ? downloadFile : undefined}
+        />
+      )}
 
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4" onClick={() => setShowKeyModal(false)}>
