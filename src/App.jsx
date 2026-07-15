@@ -12,7 +12,7 @@ import {
   Upload, ImageIcon, Sparkles, AlertCircle, Loader2, Download,
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
-  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3
+  KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3, Map
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
 
@@ -44,13 +44,18 @@ const LS_KEY = 'homestaging_gemini_key';
 const MAX_RAW_UPLOAD_MB = 15;
 
 // === Variantes IA ===
+// Hints NON-structurels : varient déco/palette/lumière SANS toucher murs, pièces, structure.
+// (Anciens hints "different layout / creative composition" provoquaient des dérives : pièces divisées, etc.)
 const VARIANT_COUNT = 4;
 const VARIANT_HINTS = [
   '',
-  ' Alternative arrangement with warmer color palette and softer natural lighting.',
-  ' Different layout angle with cooler tones and contemporary material accents.',
-  ' Creative composition with rich textures, mixed materials and dramatic lighting.',
+  ' Variation: warmer color palette and softer lighting only — keep the exact same structure, walls and layout.',
+  ' Variation: different furniture pieces and materials only — do not alter structure, walls or room boundaries.',
+  ' Variation: different textures and decorative accents only — keep structure, walls and room count identical.',
 ];
+
+// Verrou structurel : empêche l'IA d'ajouter/supprimer/diviser/fusionner des pièces ou murs.
+const STRUCTURE_LOCK = " STRICT STRUCTURAL CONSTRAINTS: Preserve the existing architecture exactly — same walls, same number of rooms, same room boundaries, same doors and windows. Keep every existing text label unchanged and in place. NEVER split, merge, add, or remove rooms or walls. NEVER convert a room into a different type of room unless explicitly instructed in the details.";
 
 // === Compression image côté client ===
 // Redimensionne à 1600px max + JPEG q=0.85 pour rester sous la limite payload Netlify (~6 MB)
@@ -390,21 +395,39 @@ export default function App() {
     }
 
     let objectiveInstruction = "";
-    switch(objective) {
-      case 'declutter':
-        objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
-        break;
-      case 'furnish':
-        objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
-        break;
-      case 'build':
-        objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
-        break;
-      default:
-        objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
-    }
+    let contextPrefix = "";
+    let lockClause = "";
 
-    const contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
+    if (mode === 'floorplan') {
+      // Aménagement de plan 2D : tâche distincte du home-staging photo.
+      contextPrefix = "Top-down 2D architectural floor plan (blueprint) with labeled rooms, viewed strictly from above";
+      if (objective === 'declutter') {
+        objectiveInstruction = "2D FLOOR PLAN TASK: This is a top-down 2D architectural floor plan. Remove any furniture symbols and leave each room empty. Keep the top-down orthographic view.";
+      } else {
+        objectiveInstruction = "2D FLOOR PLAN FURNISHING TASK: This is a top-down 2D architectural floor plan seen from above. Add realistic TOP-VIEW furniture symbols INSIDE each existing room, appropriate to that room's printed label (bed and wardrobe in a bedroom, sofa and TV in the living room/salon, table and chairs in the dining room, worktop in the kitchen, fixtures in the bathroom). Stay in a flat 2D top-down orthographic view — do NOT produce a 3D or perspective render.";
+      }
+      // Le plan 2D exige toujours le verrou structurel.
+      lockClause = STRUCTURE_LOCK + " This is a floor plan: respect each room's printed label and furnish it accordingly — a 'salon' stays a salon, a 'chambre' stays a chambre.";
+    } else {
+      contextPrefix = mode === 'interior' ? "Interior room photo" : "Exterior landscape and architecture photo";
+      switch(objective) {
+        case 'declutter':
+          objectiveInstruction = "CLEANING AND DECLUTTERING TASK: Remove all existing furniture, boxes, trash, and non-essential objects. Make the space look perfectly clean and empty.";
+          break;
+        case 'furnish':
+          objectiveInstruction = "VIRTUAL STAGING TASK: Add stylish, modern furniture to the empty areas. Create a professional and welcoming layout, without modifying the existing room structure.";
+          break;
+        case 'build':
+          objectiveInstruction = "CONSTRUCTION TASK: Modify or replace the structure of the existing buildings. Add new architectural elements based on the original structure.";
+          break;
+        default:
+          objectiveInstruction = "RENOVATION TASK: Update materials and style while keeping the existing structure. Replace floors, paint walls, update light fixtures.";
+      }
+      // Verrou structurel pour aménager/rénover (pas pour vider ni construire).
+      if (objective === 'furnish' || objective === 'renovate') {
+        lockClause = STRUCTURE_LOCK;
+      }
+    }
     const finalDetails = prompt.trim() || defaultDetail;
     const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
     const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
@@ -417,9 +440,15 @@ export default function App() {
       ? " A reference style image is provided as IMAGE 2: draw inspiration from its mood, materials, furniture style and color palette, applying them to IMAGE 1 without copying its structure or objects."
       : "";
 
+    const isFloorplan = mode === 'floorplan';
+
     const runVariant = async (idx) => {
-      const hint = VARIANT_HINTS[idx] || '';
-      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint} Photography: Professional architectural style, 8k, sharp focus. Output: ONLY the transformed image, without text.`;
+      // Plan 2D : pas de hints déco (varier = risque de dériver la structure du plan).
+      const hint = isFloorplan ? '' : (VARIANT_HINTS[idx] || '');
+      const renderClause = isFloorplan
+        ? " Rendering: clean flat 2D top-down floor-plan style, orthographic, crisp lines."
+        : " Photography: Professional architectural style, 8k, sharp focus.";
+      const fullPrompt = `${objectiveInstruction}. Context: ${contextPrefix}.${styleClause}${refClause} Design details: ${finalDetails}.${hint}${lockClause}${renderClause} Output: ONLY the transformed image, without text.`;
       try {
         const res = await fetch('/api/generate', {
           method: 'POST',
@@ -544,6 +573,12 @@ export default function App() {
               className={`flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-black transition-all ${mode === 'exterior' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}
             >
               <TreePine className="w-4 h-4" /> Extérieur
+            </button>
+            <button
+              onClick={() => setMode('floorplan')}
+              className={`flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-black transition-all ${mode === 'floorplan' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}
+            >
+              <Map className="w-4 h-4" /> Plan 2D
             </button>
           </div>
 
