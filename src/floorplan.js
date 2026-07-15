@@ -50,11 +50,17 @@ export function parseRooms(rawText) {
   return arr
     .filter(r => r && Array.isArray(r.box_2d) && r.box_2d.length === 4 && r.label)
     .filter(r => !/^(outside|void|exterieur|extérieur)/i.test(String(r.label)))
-    .map(r => ({
-      label: String(r.label).trim(),
-      furniture: String(r.furniture || '').trim(),
-      box: r.box_2d.map(Number),
-    }))
+    .map(r => {
+      const lb = Array.isArray(r.label_box_2d) && r.label_box_2d.length === 4
+        ? r.label_box_2d.map(Number)
+        : null;
+      return {
+        label: String(r.label).trim(),
+        furniture: String(r.furniture || '').trim(),
+        box: r.box_2d.map(Number),
+        labelBox: lb && lb.every(n => Number.isFinite(n)) ? lb : null,
+      };
+    })
     .filter(r => r.box.every(n => Number.isFinite(n)));
 }
 
@@ -98,14 +104,53 @@ export function cropRoom(img, box) {
   };
 }
 
+// Ré-estampe le texte d'un label depuis le plan SOURCE par-dessus le rendu.
+//
+// Le modèle repeint la pièce et abîme le texte au passage ("Chambre 1" disparaît,
+// "SDB 2" devient "DB"). Aucun prompt ne fiabilise ça. Plutôt que de le demander, on
+// l'impose : on recopie les pixels d'origine. Seuls les pixels SOMBRES (les lettres)
+// sont repris, avec leur anti-aliasing — le sol meublé généré reste visible autour,
+// donc pas de rectangle blanc collé sur les meubles.
+function restampLabel(ctx, base, box, W, H) {
+  const r = boxToPixels(box, W, H);
+  const w = r.x1 - r.x0;
+  const h = r.y1 - r.y0;
+  if (w < 2 || h < 2) return;
+
+  const tmp = document.createElement('canvas');
+  tmp.width = w;
+  tmp.height = h;
+  const tctx = tmp.getContext('2d', { willReadFrequently: true });
+  tctx.drawImage(base, r.x0, r.y0, w, h, 0, 0, w, h);
+
+  const src = tctx.getImageData(0, 0, w, h);
+  const dst = ctx.getImageData(r.x0, r.y0, w, h);
+  const s = src.data;
+  const d = dst.data;
+
+  for (let i = 0; i < s.length; i += 4) {
+    const lum = 0.299 * s[i] + 0.587 * s[i + 1] + 0.114 * s[i + 2];
+    // 1 = noir franc (coeur de la lettre), 0 = fond clair. Le dégradé entre les deux
+    // conserve l'anti-aliasing des glyphes.
+    const a = Math.max(0, Math.min(1, 1 - lum / 150));
+    if (a <= 0.02) continue;
+    d[i] = s[i] * a + d[i] * (1 - a);
+    d[i + 1] = s[i + 1] * a + d[i + 1] * (1 - a);
+    d[i + 2] = s[i + 2] * a + d[i + 2] * (1 - a);
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(dst, r.x0, r.y0);
+}
+
 // Recolle chaque pièce meublée dans le plan ORIGINAL. Seul le coeur de la pièce est
 // recollé : la marge de contexte est rejetée, donc les murs restent ceux de la source.
-export async function recomposite(originalDataUrl, placements) {
+// Les labels sont ensuite ré-estampés depuis la source, par-dessus le rendu.
+export async function recomposite(originalDataUrl, placements, labelBoxes = []) {
   const base = await loadImage(originalDataUrl);
   const canvas = document.createElement('canvas');
   canvas.width = base.naturalWidth;
   canvas.height = base.naturalHeight;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(base, 0, 0);
 
@@ -128,6 +173,18 @@ export async function recomposite(originalDataUrl, placements) {
     ctx.drawImage(gen, srcX, srcY, srcW, srcH, p.core.x, p.core.y, p.core.w, p.core.h);
   }
 
+  // Après coup : les labels d'origine reprennent le dessus sur tout ce que le modèle
+  // a pu écrire, effacer ou déformer.
+  for (const box of labelBoxes) {
+    if (Array.isArray(box) && box.length === 4) {
+      try {
+        restampLabel(ctx, base, box, canvas.width, canvas.height);
+      } catch (err) {
+        console.error('Ré-estampage du label échoué:', err);
+      }
+    }
+  }
+
   return canvas.toDataURL('image/jpeg', 0.92);
 }
 
@@ -145,10 +202,11 @@ export async function inBatches(items, size, worker) {
 export const ANALYZE_ROOMS_PROMPT = `You are analyzing a 2D architectural floor plan (top-down blueprint) with rooms labeled in French.
 
 Return ONLY a JSON array, no prose, no markdown fences. One object per ENCLOSED, LABELED room:
-[{"label":"<exact printed label>","box_2d":[ymin,xmin,ymax,xmax],"furniture":"<top-view furniture that belongs in this room>"}]
+[{"label":"<exact printed label>","box_2d":[ymin,xmin,ymax,xmax],"label_box_2d":[ymin,xmin,ymax,xmax],"furniture":"<top-view furniture that belongs in this room>"}]
 
 Rules:
 - box_2d uses integers normalized to 0-1000, in the order [ymin, xmin, ymax, xmax], covering ONLY the interior of that room (inside its own walls).
+- label_box_2d is a TIGHT box (same 0-1000 format) around the printed text of that room ONLY — both the room name and its surface area line (e.g. "Chambre 1" + "10.5 m²"). Keep it snug around the text, with a couple of units of margin; never let it cover the whole room.
 - Use the printed label to choose furniture:
   Chambre / Suite parentale -> double bed, nightstands, wardrobe
   Salon cuisine -> sofa, coffee table, rug, TV unit, dining table with chairs, kitchen counter with sink and hob
@@ -171,7 +229,8 @@ ABSOLUTE CONSTRAINTS:
 - Keep the printed text label "${label}" and its surface area visible and unchanged.
 - Do NOT add, remove, split or merge any wall or room.
 - Do NOT change the image framing, zoom, dimensions or perspective.
-- Do NOT place anything outside the room's walls.
+- Every object you add — furniture, rugs, plants, decoration, shadows — must stay STRICTLY INSIDE this room's walls. Never draw on top of a wall, and never let anything spill into the corridor, the neighbouring rooms or the blank area outside the walls.
+- Do not scatter decorative plants around: at most one or two, placed inside the room.
 - Furniture must be to scale and fit inside the room.
 - Flat 2D top-down floor-plan rendering style, orthographic, crisp lines.
 

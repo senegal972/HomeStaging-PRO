@@ -401,10 +401,16 @@ export default function App() {
     const adata = await ares.json();
     if (!ares.ok) throw new Error(adata.error || "Analyse du plan impossible.");
 
-    const rooms = parseRooms(adata.text).filter(r => r.furniture);
+    const allRooms = parseRooms(adata.text);
+    // Seules les pièces à meubler passent dans la génération...
+    const rooms = allRooms.filter(r => r.furniture);
     if (rooms.length === 0) {
       throw new Error("Aucune pièce détectée sur ce plan. Vérifiez que les pièces sont fermées et étiquetées.");
     }
+    // ...mais TOUS les labels sont ré-estampés : le crop d'une pièce déborde sur ses
+    // voisines (marge de contexte), donc même le label d'un couloir non meublé peut
+    // être abîmé au passage.
+    const labelBoxes = allRooms.map(r => r.labelBox).filter(Boolean);
 
     // --- Découpe des pièces sur le plan source ---
     const baseImg = await loadImage(originalPreview);
@@ -452,9 +458,9 @@ export default function App() {
     const ok = placements.filter(Boolean);
     if (ok.length === 0) throw new Error("Aucune pièce n'a pu être aménagée.");
 
-    // --- Recomposition sur le plan original (murs intacts) ---
+    // --- Recomposition sur le plan original (murs intacts, labels ré-estampés) ---
     setPlanProgress({ phase: 'recomposition', done: jobs.length, total: jobs.length });
-    const finalImage = await recomposite(originalPreview, ok);
+    const finalImage = await recomposite(originalPreview, ok, labelBoxes);
     setGeneratedImage(finalImage);
 
     if (ok.length < jobs.length) {
