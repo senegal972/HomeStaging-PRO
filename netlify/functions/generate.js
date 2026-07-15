@@ -1,3 +1,95 @@
+const API_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
+
+// Les modèles Gemini sont dépréciés régulièrement, et la disponibilité dépend de la clé
+// (un modèle peut rester actif pour un ancien projet et être refusé aux nouveaux comptes :
+// "no longer available to new users"). On interroge donc ListModels pour savoir ce qui est
+// réellement accessible à CETTE clé, puis on essaie les candidats dans l'ordre.
+
+// Cache par clé, valable le temps du warm start du lambda.
+const modelCache = new Map();
+
+// Préférences ordonnées. Un nom absent de la liste ListModels est simplement ignoré.
+const TEXT_PREFERENCES = [
+  'gemini-flash-latest',
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+];
+
+const IMAGE_PREFERENCES = [
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-image',
+  'gemini-2.0-flash-preview-image-generation',
+];
+
+async function listModels(apiKey) {
+  if (modelCache.has(apiKey)) return modelCache.get(apiKey);
+  const res = await fetch(`${API_ROOT}/models?pageSize=200&key=${apiKey}`);
+  if (!res.ok) {
+    modelCache.set(apiKey, []);
+    return [];
+  }
+  const data = await res.json();
+  const names = (data.models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => String(m.name || '').replace(/^models\//, ''));
+  modelCache.set(apiKey, names);
+  return names;
+}
+
+// Construit la liste ordonnée des modèles à tenter.
+// wantImage: modèles capables de RENVOYER une image (nom contenant "image").
+async function candidateModels(apiKey, wantImage) {
+  const available = await listModels(apiKey);
+  const prefs = wantImage ? IMAGE_PREFERENCES : TEXT_PREFERENCES;
+  const ordered = prefs.filter(p => available.includes(p));
+
+  // Complète avec ce que la clé expose réellement, au cas où les préférences soient
+  // toutes obsolètes (évite de re-casser à la prochaine dépréciation).
+  const discovered = available.filter(n => {
+    const isImage = /image/i.test(n);
+    if (wantImage !== isImage) return false;
+    if (/embedding|aqa|tts|native-audio|live/i.test(n)) return false;
+    return !ordered.includes(n);
+  });
+
+  const fallback = ordered.concat(discovered);
+  // Si ListModels a échoué, on tente quand même les préférences en aveugle.
+  return fallback.length ? fallback : prefs;
+}
+
+// Essaie chaque modèle jusqu'à une réponse exploitable.
+async function generateWithFallback(apiKey, wantImage, payload) {
+  const models = await candidateModels(apiKey, wantImage);
+  let lastError = 'Aucun modèle Gemini disponible pour cette clé.';
+
+  for (const model of models) {
+    let res, data;
+    try {
+      res = await fetch(`${API_ROOT}/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      data = await res.json();
+    } catch (err) {
+      lastError = err.message;
+      continue;
+    }
+
+    if (res.ok) return { ok: true, data, model };
+
+    lastError = data?.error?.message || `HTTP ${res.status}`;
+
+    // Modèle indisponible/déprécié/inconnu -> on tente le suivant.
+    // Quota, clé invalide, contenu refusé -> inutile d'insister.
+    const retryable = res.status === 404 || /no longer available|not found|not supported|does not exist/i.test(lastError);
+    if (!retryable) return { ok: false, status: res.status, error: lastError };
+  }
+
+  return { ok: false, status: 502, error: lastError };
+}
+
 exports.handler = async (event) => {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -33,8 +125,6 @@ exports.handler = async (event) => {
 
   // === PASSE 1 (analyse) : lecture du plan 2D, réponse TEXTE (carte des pièces) ===
   if (analyze) {
-    const textModel = 'gemini-2.5-flash';
-    const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${apiKey}`;
     const analyzePayload = {
       contents: [{
         parts: [
@@ -44,23 +134,20 @@ exports.handler = async (event) => {
       }],
       generationConfig: { temperature: 0.2 }
     };
+
     try {
-      const up = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analyzePayload) });
-      const r = await up.json();
-      if (!up.ok) {
-        return { statusCode: up.status, headers, body: JSON.stringify({ error: `Erreur analyse Gemini : ${r?.error?.message || 'inconnue'}` }) };
+      const r = await generateWithFallback(apiKey, false, analyzePayload);
+      if (!r.ok) {
+        return { statusCode: r.status, headers, body: JSON.stringify({ error: `Erreur analyse Gemini : ${r.error}` }) };
       }
-      const text = r.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') || '';
-      return { statusCode: 200, headers, body: JSON.stringify({ text }) };
+      const text = r.data.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') || '';
+      return { statusCode: 200, headers, body: JSON.stringify({ text, model: r.model }) };
     } catch (err) {
       return { statusCode: 500, headers, body: JSON.stringify({ error: `Erreur serveur analyse : ${err.message}` }) };
     }
   }
 
-  // Modèle le plus récent supportant image en entrée + sortie
-  const model = 'gemini-2.5-flash-image';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
+  // === PASSE 2 (génération image) ===
   const parts = [
     { text: prompt },
     { text: 'IMAGE 1 (à transformer) — voici la photo source à modifier :' },
@@ -79,24 +166,13 @@ exports.handler = async (event) => {
   };
 
   try {
-    const upstream = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    const r = await generateWithFallback(apiKey, true, payload);
 
-    const result = await upstream.json();
-
-    if (!upstream.ok) {
-      const detail = result?.error?.message || 'Erreur inconnue';
-      return {
-        statusCode: upstream.status,
-        headers,
-        body: JSON.stringify({ error: `Erreur API Gemini : ${detail}` })
-      };
+    if (!r.ok) {
+      return { statusCode: r.status, headers, body: JSON.stringify({ error: `Erreur API Gemini : ${r.error}` }) };
     }
 
-    const imagePart = result.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    const imagePart = r.data.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
     if (!imagePart?.inlineData?.data) {
       return {
         statusCode: 500,
@@ -110,7 +186,8 @@ exports.handler = async (event) => {
       headers,
       body: JSON.stringify({
         imageData: imagePart.inlineData.data,
-        mimeType: imagePart.inlineData.mimeType || 'image/png'
+        mimeType: imagePart.inlineData.mimeType || 'image/png',
+        model: r.model
       })
     };
 
