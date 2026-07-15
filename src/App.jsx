@@ -15,6 +15,10 @@ import {
   KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3, Map
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
+import {
+  loadImage, parseRooms, cropRoom, recomposite, inBatches,
+  ANALYZE_ROOMS_PROMPT, furnishRoomPrompt
+} from './floorplan';
 
 // === CONFIGURATION Firebase ===
 const FIREBASE_CONFIGURED = !!(
@@ -146,6 +150,7 @@ export default function App() {
   const [referenceFile, setReferenceFile] = useState(null);
   const [referencePreview, setReferencePreview] = useState(null);
   const [isConvertingRef, setIsConvertingRef] = useState(false);
+  const [planProgress, setPlanProgress] = useState(null);
 
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
@@ -369,6 +374,108 @@ export default function App() {
     if (refInputRef.current) refInputRef.current.value = "";
   };
 
+  // === Pipeline plan 2D : analyse -> crop par pièce -> aménagement isolé -> recomposition ===
+  // Le modèle ne voit jamais le plan entier : impossible pour lui d'inventer des murs,
+  // de vider le salon ou de meubler l'extérieur. Les murs finaux sont ceux du plan source.
+  const runFloorplanPipeline = async () => {
+    const imageData = originalPreview.split(',')[1];
+    const mimeType = selectedFile.type;
+    const referenceImageData = referencePreview ? referencePreview.split(',')[1] : undefined;
+    const referenceMimeType = referenceFile ? referenceFile.type : undefined;
+    const selectedStyle = (STYLES_BY_OBJECTIVE[objective] || []).find(s => s.id === styleId);
+    const styleClause = selectedStyle ? ` Style: ${selectedStyle.label} — ${selectedStyle.desc}.` : "";
+    const refClause = referenceImageData
+      ? " A reference style image is provided as IMAGE 2: draw inspiration from its materials and color palette only."
+      : "";
+    const extraDetails = prompt.trim() ? ` Additional details: ${prompt.trim()}.` : "";
+
+    // --- Passe 1 : lecture du plan, boîtes + meubles par pièce ---
+    setPlanProgress({ phase: 'analyse', done: 0, total: 0 });
+    const ares = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analyze: true, prompt: ANALYZE_ROOMS_PROMPT, mimeType, imageData, userApiKey: userApiKey || undefined })
+    });
+    const adata = await ares.json();
+    if (!ares.ok) throw new Error(adata.error || "Analyse du plan impossible.");
+
+    const rooms = parseRooms(adata.text).filter(r => r.furniture);
+    if (rooms.length === 0) {
+      throw new Error("Aucune pièce détectée sur ce plan. Vérifiez que les pièces sont fermées et étiquetées.");
+    }
+
+    // --- Découpe des pièces sur le plan source ---
+    const baseImg = await loadImage(originalPreview);
+    const jobs = [];
+    for (const room of rooms) {
+      const cropped = cropRoom(baseImg, room.box);
+      if (cropped) jobs.push({ room, cropped });
+    }
+    if (jobs.length === 0) throw new Error("Découpe des pièces impossible (boîtes invalides).");
+
+    setPlanProgress({ phase: 'amenagement', done: 0, total: jobs.length });
+    let done = 0;
+
+    // --- Passe 2 : aménagement, une pièce à la fois ---
+    const placements = await inBatches(jobs, 3, async ({ room, cropped }) => {
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: furnishRoomPrompt(room.label, room.furniture + extraDetails, styleClause, refClause),
+            mimeType: 'image/jpeg',
+            imageData: cropped.dataUrl.split(',')[1],
+            referenceImageData,
+            referenceMimeType,
+            userApiKey: userApiKey || undefined
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.imageData) throw new Error(data.error || "pas d'image");
+        return {
+          imageDataUrl: `data:${data.mimeType || 'image/png'};base64,${data.imageData}`,
+          crop: cropped.crop,
+          core: cropped.core,
+        };
+      } catch (err) {
+        console.error(`Pièce "${room.label}" échouée:`, err);
+        return null; // pièce laissée telle quelle dans le plan final
+      } finally {
+        done += 1;
+        setPlanProgress({ phase: 'amenagement', done, total: jobs.length });
+      }
+    });
+
+    const ok = placements.filter(Boolean);
+    if (ok.length === 0) throw new Error("Aucune pièce n'a pu être aménagée.");
+
+    // --- Recomposition sur le plan original (murs intacts) ---
+    setPlanProgress({ phase: 'recomposition', done: jobs.length, total: jobs.length });
+    const finalImage = await recomposite(originalPreview, ok);
+    setGeneratedImage(finalImage);
+
+    if (ok.length < jobs.length) {
+      setError(`${jobs.length - ok.length} pièce(s) sur ${jobs.length} n'ont pas pu être aménagées et sont restées vides.`);
+    }
+
+    if (user && !user.isAnonymous) {
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'designs'), {
+          before: originalPreview,
+          after: finalImage,
+          prompt: prompt || "Plan 2D aménagé",
+          mode: 'floorplan',
+          objective,
+          styleId: styleId || null,
+          createdAt: serverTimestamp()
+        });
+      } catch (fireErr) {
+        console.error("Erreur sauvegarde Firestore:", fireErr);
+      }
+    }
+  };
+
   const generateTransformation = async () => {
     if (!selectedFile || !originalPreview || !user) {
       setError("Veuillez importer une image avant de générer.");
@@ -377,6 +484,26 @@ export default function App() {
 
     if (!effectiveApiKey) {
       setError("Clé API Gemini manquante. Cliquez sur l'icône clé 🔑 pour saisir votre clé Google AI Studio.");
+      return;
+    }
+
+    // Plan 2D + aménager/rénover : pipeline pièce par pièce (pas de variantes — 1 appel
+    // par pièce, x4 variantes exploserait le quota).
+    if (mode === 'floorplan' && objective !== 'declutter') {
+      setIsGenerating(true);
+      setError(null);
+      setGeneratedImage(null);
+      setVariants(null);
+      setSelectedVariantIdx(0);
+      try {
+        await runFloorplanPipeline();
+      } catch (err) {
+        console.error("Erreur pipeline plan 2D:", err);
+        setError(`Erreur : ${err.message}`);
+      } finally {
+        setPlanProgress(null);
+        setIsGenerating(false);
+      }
       return;
     }
 
@@ -844,7 +971,15 @@ export default function App() {
                       <div className="w-16 h-16 border-4 border-indigo-50 border-t-indigo-600 rounded-full animate-spin"></div>
                       <Boxes className="absolute inset-0 m-auto w-6 h-6 text-indigo-600 animate-pulse" />
                     </div>
-                    <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase">Analyse des pixels...</p>
+                    <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase">
+                      {planProgress
+                        ? planProgress.phase === 'analyse'
+                          ? 'Lecture du plan...'
+                          : planProgress.phase === 'recomposition'
+                            ? 'Recomposition du plan...'
+                            : `Aménagement ${planProgress.done}/${planProgress.total} pièces...`
+                        : 'Analyse des pixels...'}
+                    </p>
                   </div>
                 ) : generatedImage ? (
                   compareMode && originalPreview ? (
