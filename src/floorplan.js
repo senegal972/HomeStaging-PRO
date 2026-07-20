@@ -219,6 +219,26 @@ Rules:
 - NEVER include the blank area outside the exterior walls, courtyards, terraces, or page margins.
 - Do not invent rooms. Do not merge or split rooms. Copy each label exactly as printed.`;
 
+// Prompt d'analyse ÉLARGI : capture aussi les zones extérieures (terrasses, piscine,
+// jardin, bac tampon…). L'ancien ANALYZE_ROOMS_PROMPT excluait explicitement le
+// hors-murs — sur un plan de masse, ça effaçait la piscine, les 2 terrasses et le
+// jardin tropical, que le modèle ne pouvait donc PAS reconstruire.
+export const ANALYZE_SITE_PROMPT = `You are analyzing a 2D architectural SITE PLAN (top-down, French labels).
+
+Return ONLY a JSON array, no prose, no markdown fences. One object per LABELED zone (indoor room OR outdoor element):
+[{"label":"<exact printed label>","kind":"room|terrace|pool|garden|patio|other","box_2d":[ymin,xmin,ymax,xmax]}]
+
+Rules:
+- box_2d uses integers normalized 0-1000, order [ymin,xmin,ymax,xmax], covering the zone's footprint.
+- Include EVERY labeled zone visible on the plan:
+  - Indoor rooms enclosed by walls (Chambre, Suite parentale, Salon cuisine, SDB, WC, Dressing, Buanderie, Piece…) -> kind="room"
+  - Outdoor terraces / decks (Terrasse extérieure, Terrasse…) -> kind="terrace"
+  - Pools (Piscine, Piscine de nage, Bac tampon…) -> kind="pool"
+  - Gardens / patios (Jardin tropical, Jardin intérieur, Patio, Cour…) -> kind="garden"
+  - Anything else labeled -> kind="other" (with its exact label)
+- Copy each printed label VERBATIM. Do not merge, split, or invent zones.
+- Do not add zones that are not labeled on the plan.`;
+
 // Décrit la géométrie lue sur le plan, pour ancrer le rendu 3D.
 // Sans cette carte, le modèle « invente » une maison plausible au lieu de reconstruire
 // CELLE du plan : c'est la cause des rendus 3D qui ne ressemblent pas à la source.
@@ -234,16 +254,58 @@ export function roomMapText(rooms) {
   return `\n\nROOM LAYOUT read from the plan — reproduce EXACTLY this set of rooms, in these relative positions and relative sizes, and nothing else:\n${rooms.map(line).join('\n')}\n`;
 }
 
-export function render3dPrompt(roomsClause, styleClause, refClause, details) {
-  return `ARCHITECTURAL 3D VISUALISATION TASK — convert a 2D floor plan into a 3D render.
+// Parse la réponse ANALYZE_SITE_PROMPT (zones intérieures + extérieures).
+export function parseSite(rawText) {
+  if (!rawText) return { rooms: [], outdoor: [] };
+  let txt = rawText.trim();
+  const fence = txt.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) txt = fence[1].trim();
+  const s = txt.indexOf('['), e = txt.lastIndexOf(']');
+  if (s !== -1 && e !== -1) txt = txt.slice(s, e + 1);
+  let arr;
+  try { arr = JSON.parse(txt); } catch { return { rooms: [], outdoor: [] }; }
+  if (!Array.isArray(arr)) return { rooms: [], outdoor: [] };
+  const zones = arr
+    .filter(z => z && Array.isArray(z.box_2d) && z.box_2d.length === 4 && z.label)
+    .map(z => ({
+      label: String(z.label).trim(),
+      kind: String(z.kind || 'other').toLowerCase(),
+      box: z.box_2d.map(Number),
+    }))
+    .filter(z => z.box.every(n => Number.isFinite(n)));
+  return {
+    rooms: zones.filter(z => z.kind === 'room'),
+    outdoor: zones.filter(z => z.kind !== 'room'),
+  };
+}
 
-IMAGE 1 is a 2D architectural floor plan seen from above. Rebuild the dwelling it describes in three dimensions and render it as a realistic AXONOMETRIC (isometric) doll-house view seen from above at roughly a 45° angle, with the ROOF REMOVED so the whole interior is visible — a cutaway 3D view.
-${roomsClause}
+// Décrit la carte extérieure (terrasses, piscine, jardin…) pour la vue 3D.
+export function outdoorMapText(outdoor) {
+  if (!outdoor?.length) return '';
+  const line = (z) => {
+    const [ymin, xmin, ymax, xmax] = z.box;
+    const vert = ymin < 380 ? 'top' : ymin > 620 ? 'bottom' : 'middle';
+    const horiz = xmin < 380 ? 'left' : xmin > 620 ? 'right' : 'centre';
+    return `- "${z.label}" (${z.kind}) — ${vert}-${horiz}`;
+  };
+  return `\n\nOUTDOOR LAYOUT read from the site plan — include EACH element at the position shown:\n${outdoor.map(line).join('\n')}\n`;
+}
+
+export function render3dPrompt(roomsClause, outdoorClause, styleClause, refClause, details) {
+  const hasOutdoor = !!outdoorClause;
+  return `ARCHITECTURAL 3D VISUALISATION TASK — convert a 2D site plan into a 3D render.
+
+IMAGE 1 is a 2D architectural site plan seen from above (technical drawing, NOT a photograph). Rebuild what it shows in three dimensions and render it as a realistic AXONOMETRIC (isometric) doll-house view seen from above at roughly a 45° angle, with the ROOF REMOVED so the whole interior is visible — a cutaway 3D view.
+${roomsClause}${outdoorClause}
 GEOMETRY IS THE PRIORITY: the result must be recognisable as THIS plan and no other. Same outer footprint and proportions, same wall positions, same room count, same relative room sizes, same adjacency, same door and window openings. Do not redesign the dwelling, do not add or remove rooms, walls or levels.
+
+${hasOutdoor
+  ? 'INCLUDE EVERY outdoor element listed above at its exact position (terraces, pool, garden, patio…). Do NOT relocate the pool or the terraces, do NOT invent extra pools, decks or gardens that are not on the plan.'
+  : 'Extend the dwelling naturally outdoors: a credible garden with natural lawn.'}
 
 Furnish and inhabit each room according to its function on the plan: welcoming living area, contemporary open kitchen, made-up bedrooms, coherent bathrooms. Realistic materials: light walls, parquet or tiling depending on the space, simple elegant contemporary furniture.${styleClause}${refClause}
 
-Extend the dwelling naturally outdoors: terraces where the plan shows them, a credible garden, natural lawn, and a few Caribbean trees — notably palm trees with sculptural trunks and vivid foliage — arranged around the house and the terrace for a warm, sunny atmosphere.${details}
+Frame a few Caribbean trees — palm trees with sculptural trunks and vivid foliage — AROUND the plot only, without ever covering the labeled outdoor zones.${details}
 
 Final rendering: high-end architectural visualisation, detailed and photorealistic, warm and luminous, like a contemporary architecture image made to present a real-estate project. Output ONLY the image, with no text or labels.`;
 }

@@ -20,7 +20,8 @@ import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
-  ANALYZE_ROOMS_PROMPT, furnishRoomPrompt, render3dPrompt, roomMapText
+  ANALYZE_ROOMS_PROMPT, ANALYZE_SITE_PROMPT, parseSite,
+  furnishRoomPrompt, render3dPrompt, roomMapText, outdoorMapText
 } from './floorplan';
 
 // === CONFIGURATION Firebase ===
@@ -154,6 +155,12 @@ const STYLES_BY_OBJECTIVE = {
     { id: 'colonial', label: 'Colonial créole', desc: 'Bois sombre, persiennes, ventilateurs, charme antillais' },
   ],
   render3d: [
+    { id: 'creole-moderne-3d', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
+    { id: 'contemporain-3d', label: 'Contemporain', desc: 'Volumes blancs, baies vitrées, toit plat' },
+    { id: 'tropical-3d', label: 'Tropical', desc: 'Bois exotique, débords de toit, végétation luxuriante' },
+    { id: 'mediterraneen-3d', label: 'Méditerranéen', desc: 'Façade ocre, tuiles, arcades, volets bois' },
+  ],
+  'build-from-plan': [
     { id: 'creole-moderne-3d', label: 'Créole moderne', desc: 'Toit pentu, varangue, persiennes, palette tropicale' },
     { id: 'contemporain-3d', label: 'Contemporain', desc: 'Volumes blancs, baies vitrées, toit plat' },
     { id: 'tropical-3d', label: 'Tropical', desc: 'Bois exotique, débords de toit, végétation luxuriante' },
@@ -507,17 +514,23 @@ export default function App() {
       : "";
     const details = prompt.trim() ? `\n\nAdditional requirements: ${prompt.trim()}` : "";
 
-    // Passe 1 : lecture de la géométrie.
+    // Passe 1 : lecture de la géométrie — pièces ET zones extérieures (terrasse, piscine…).
+    // Prompt élargi pour ne plus ignorer les terrasses, piscines, jardins qui étaient
+    // absents du rendu précédent parce que le prompt les excluait explicitement.
     setPlanProgress({ phase: 'analyse', done: 0, total: 0 });
-    let roomsClause = "";
+    let roomsClause = "", outdoorClause = "";
     try {
       const ares = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analyze: true, prompt: ANALYZE_ROOMS_PROMPT, mimeType, imageData, userApiKey: userApiKey || undefined })
+        body: JSON.stringify({ analyze: true, prompt: ANALYZE_SITE_PROMPT, mimeType, imageData, userApiKey: userApiKey || undefined })
       });
       const adata = await ares.json();
-      if (ares.ok && adata.text) roomsClause = roomMapText(parseRooms(adata.text));
+      if (ares.ok && adata.text) {
+        const { rooms, outdoor } = parseSite(adata.text);
+        roomsClause = roomMapText(rooms);
+        outdoorClause = outdoorMapText(outdoor);
+      }
     } catch (err) {
       // Sans la carte le rendu reste possible, simplement moins fidèle : on continue.
       console.error('Lecture du plan échouée, rendu 3D non ancré:', err);
@@ -526,7 +539,7 @@ export default function App() {
     setPlanProgress(null);
     setVariants(Array.from({ length: VARIANT_COUNT }, () => ({ status: 'pending' })));
 
-    const fullPrompt = render3dPrompt(roomsClause, styleClause, refClause, details);
+    const fullPrompt = render3dPrompt(roomsClause, outdoorClause, styleClause, refClause, details);
 
     const runOne = async (idx) => {
       // Variantes 3D : on fait varier le rendu, jamais la géométrie.
@@ -606,14 +619,16 @@ export default function App() {
     // par pièce, x4 variantes exploserait le quota).
     // Plan 2D + vue 3D : chemin dédié, sans les garde-fous photo (qui interdiraient
     // justement le changement de point de vue).
-    if (mode === 'floorplan' && (objective === 'furnish' || objective === 'renovate' || objective === 'render3d')) {
+    if (mode === 'floorplan' && (objective === 'furnish' || objective === 'renovate' || objective === 'render3d' || objective === 'build-from-plan')) {
       setIsGenerating(true);
       setError(null);
       setGeneratedImage(null);
       setVariants(null);
       setSelectedVariantIdx(0);
       try {
-        if (objective === 'render3d') await runRender3d();
+        // "Construire (3D)" en Plan 2D = même chemin que Vue 3D (garde-fous plan3d,
+        // pas les garde-fous photo qui verrouilleraient la vue du dessus).
+        if (objective === 'render3d' || objective === 'build-from-plan') await runRender3d();
         else await runFloorplanPipeline();
       } catch (err) {
         console.error("Erreur plan 2D:", err);
@@ -802,6 +817,9 @@ export default function App() {
     { id: 'build', label: 'Construire', icon: <Hammer className="w-3 h-3" />, desc: 'Nouveau bâtiment', modes: ['interior', 'exterior'] },
     { id: 'implant', label: 'Implanter', icon: <MapPin className="w-3 h-3" />, desc: 'Poser un bâtiment sur un terrain', modes: ['interior', 'exterior'] },
     { id: 'render3d', label: 'Vue 3D', icon: <Boxes className="w-3 h-3" />, desc: 'Plan 2D → maison en volume', modes: ['floorplan'] },
+    // "Construire" en mode Plan 2D est en fait une Vue 3D construite depuis le plan.
+    // On l'expose comme raccourci et on le redirige vers le chemin plan3d.
+    { id: 'build-from-plan', label: 'Construire (3D)', icon: <Hammer className="w-3 h-3" />, desc: 'Bâtir en 3D depuis le plan', modes: ['floorplan'] },
   ];
   const objectiveOptions = ALL_OBJECTIVES.filter(o => !o.modes || o.modes.includes(mode));
 
