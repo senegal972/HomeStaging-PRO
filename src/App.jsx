@@ -18,6 +18,7 @@ import {
 import CompareSlider from './CompareSlider';
 import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
+import { useUnsavedGuard } from './useUnsavedGuard';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
   ANALYZE_ROOMS_PROMPT, ANALYZE_SITE_PROMPT, parseSite,
@@ -214,6 +215,20 @@ export default function App() {
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
   const zoneDrawRef = useRef(null);
+
+  // « Travail en cours » = tout ce qu'un retour arrière ferait perdre.
+  // On protège pendant une génération, si une photo est chargée, si un rendu
+  // existe, si l'utilisateur a tapé du texte, dessiné une zone, importé des
+  // références, ou si des variantes sont en attente/prêtes.
+  const hasWork = (
+    isGenerating || isConverting || isConvertingRef ||
+    !!selectedFile || !!originalPreview || !!generatedImage ||
+    !!variants || !!planProgress ||
+    prompt.trim().length > 0 ||
+    referenceImages.length > 0 ||
+    hasDrawing
+  );
+  const { pendingExit, cancelExit, confirmExit } = useUnsavedGuard(hasWork);
 
   const effectiveApiKey = userApiKey || GEMINI_API_KEY_DEFAULT;
 
@@ -1405,6 +1420,48 @@ export default function App() {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #CBD5E1; }
       `}</style>
+
+      {pendingExit && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unsaved-title"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); cancelExit(); } }}
+        >
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-7 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-50 rounded-2xl border border-amber-100">
+                <AlertCircle className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h2 id="unsaved-title" className="text-sm font-black text-slate-900">
+                  Quitter le projet en cours ?
+                </h2>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Votre photo, votre rendu et vos réglages seront perdus.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <button
+                autoFocus
+                onClick={cancelExit}
+                className="w-full py-3 bg-indigo-600 text-white rounded-2xl text-xs font-black hover:bg-indigo-700 transition-colors"
+              >
+                Non, rester dans l'application
+              </button>
+              <button
+                onClick={confirmExit}
+                className="w-full py-3 border border-slate-200 text-slate-600 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors"
+              >
+                Oui, abandonner le projet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {lightbox && (
         <Lightbox
