@@ -13,7 +13,7 @@ import {
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
   KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3,
-  MapPin, Pencil, Undo2, Trash2, Check, Map, Maximize2
+  MapPin, Pencil, Undo2, Trash2, Check, Map, Maximize2, Camera
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
 import ZoneDraw from './ZoneDraw';
@@ -213,6 +213,7 @@ export default function App() {
   const [lightbox, setLightbox] = useState(null);
 
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const refInputRef = useRef(null);
   const zoneDrawRef = useRef(null);
 
@@ -332,6 +333,7 @@ export default function App() {
     setPlanProgress(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
     if (refInputRef.current) refInputRef.current.value = "";
   };
 
@@ -361,6 +363,7 @@ export default function App() {
       console.error("Erreur import image:", err);
       setError(err.message);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      if (cameraInputRef.current) cameraInputRef.current.value = "";
     } finally {
       setIsConverting(false);
     }
@@ -1039,14 +1042,19 @@ export default function App() {
                   </div>
                 )}
                 <div
-                  onClick={() => { if (!drawMode) fileInputRef.current?.click(); }}
+                  onClick={() => { if (!drawMode && !originalPreview) fileInputRef.current?.click(); }}
                   className={`relative aspect-video rounded-3xl border-2 overflow-hidden transition-all bg-slate-50 group ${
                     drawMode
                       ? 'border-indigo-400'
-                      : 'border-dashed border-slate-200 cursor-pointer hover:border-indigo-400'
+                      : originalPreview
+                        ? 'border-slate-200'
+                        : 'border-dashed border-slate-200 cursor-pointer hover:border-indigo-400'
                   }`}
                 >
+                  {/* Deux inputs distincts : accept sans capture -> galerie/finder,
+                      capture="environment" -> caméra arrière du téléphone (ignoré sur desktop). */}
                   <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
+                  <input type="file" ref={cameraInputRef} onChange={handleFileChange} className="hidden" accept="image/*" capture="environment" />
                   {isConverting ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
                       <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
@@ -1069,10 +1077,26 @@ export default function App() {
                       />
                     </>
                   ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 group-hover:text-indigo-500">
-                      <Upload className="w-8 h-8 mb-2" />
-                      <p className="text-xs font-bold">Importer un fichier</p>
-                      <p className="text-[10px] text-slate-300 mt-1">JPG, PNG, HEIC supportés</p>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-400 px-6">
+                      <div className="flex gap-2 w-full">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); cameraInputRef.current?.click(); }}
+                          className="flex-1 flex flex-col items-center justify-center gap-1 py-3 rounded-2xl bg-white border border-slate-200 hover:border-indigo-400 hover:text-indigo-600 transition-all"
+                        >
+                          <Camera className="w-6 h-6" />
+                          <span className="text-[10px] font-black uppercase tracking-tighter">Prendre une photo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                          className="flex-1 flex flex-col items-center justify-center gap-1 py-3 rounded-2xl bg-white border border-slate-200 hover:border-indigo-400 hover:text-indigo-600 transition-all"
+                        >
+                          <Upload className="w-6 h-6" />
+                          <span className="text-[10px] font-black uppercase tracking-tighter">Importer un fichier</span>
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-300">JPG, PNG, HEIC supportés</p>
                     </div>
                   )}
                 </div>
