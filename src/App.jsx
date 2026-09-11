@@ -18,6 +18,7 @@ import {
 import CompareSlider from './CompareSlider';
 import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
+import CameraCapture from './CameraCapture';
 import { useUnsavedGuard } from './useUnsavedGuard';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
@@ -211,6 +212,7 @@ export default function App() {
   const [planProgress, setPlanProgress] = useState(null);
   const [usedModel, setUsedModel] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
 
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -222,7 +224,7 @@ export default function App() {
   // existe, si l'utilisateur a tapé du texte, dessiné une zone, importé des
   // références, ou si des variantes sont en attente/prêtes.
   const hasWork = (
-    isGenerating || isConverting || isConvertingRef ||
+    isGenerating || isConverting || isConvertingRef || cameraOpen ||
     !!selectedFile || !!originalPreview || !!generatedImage ||
     !!variants || !!planProgress ||
     prompt.trim().length > 0 ||
@@ -340,6 +342,25 @@ export default function App() {
   const handleObjectiveChange = (newObj) => {
     setObjective(newObj);
     setStyleId(null);
+  };
+
+  // La caméra native (getUserMedia) renvoie un File — on le passe dans le même
+  // pipeline que le sélecteur de fichiers pour bénéficier de la compression,
+  // du contrôle de taille et de la gestion HEIC en un seul endroit.
+  const handleCameraCapture = async (file) => {
+    setCameraOpen(false);
+    if (!file) return;
+    await handleFileChange({ target: { files: [file] } });
+  };
+
+  // Ouvre la caméra plein écran si getUserMedia est disponible ; sinon retombe
+  // sur l'input capture natif (Safari desktop ancien, WebView restrictifs…).
+  const openCamera = () => {
+    if (navigator.mediaDevices?.getUserMedia) {
+      setCameraOpen(true);
+    } else {
+      cameraInputRef.current?.click();
+    }
   };
 
   const handleFileChange = async (e) => {
@@ -1081,7 +1102,7 @@ export default function App() {
                       <div className="flex gap-2 w-full">
                         <button
                           type="button"
-                          onClick={(e) => { e.stopPropagation(); cameraInputRef.current?.click(); }}
+                          onClick={(e) => { e.stopPropagation(); openCamera(); }}
                           className="flex-1 flex flex-col items-center justify-center gap-1 py-3 rounded-2xl bg-white border border-slate-200 hover:border-indigo-400 hover:text-indigo-600 transition-all"
                         >
                           <Camera className="w-6 h-6" />
@@ -1444,6 +1465,13 @@ export default function App() {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #CBD5E1; }
       `}</style>
+
+      {cameraOpen && (
+        <CameraCapture
+          onCapture={handleCameraCapture}
+          onClose={() => setCameraOpen(false)}
+        />
+      )}
 
       {pendingExit && (
         <div
