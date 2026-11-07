@@ -802,7 +802,15 @@ export default function App() {
       const successes = results.filter(Boolean);
 
       if (successes.length === 0) {
-        setError("Aucune variante n'a pu être générée. Vérifiez votre clé API ou réessayez.");
+        // On remonte la vraie cause renvoyée par Gemini plutôt qu'un message générique,
+        // sinon l'utilisateur ne sait pas s'il s'agit de quota, clé expirée, image
+        // refusée pour contenu, modèle indisponible, etc.
+        setVariants(v => {
+          const firstErr = v?.find(x => x?.status === 'error')?.error;
+          const detail = firstErr ? `Détail : ${firstErr}` : "Vérifiez votre clé API ou réessayez.";
+          setError(`Aucune variante n'a pu être générée. ${detail}`);
+          return v;
+        });
         return;
       }
 
@@ -1074,7 +1082,7 @@ export default function App() {
                 >
                   {/* Deux inputs distincts : accept sans capture -> galerie/finder,
                       capture="environment" -> caméra arrière du téléphone (ignoré sur desktop). */}
-                  <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,.heic" />
+                  <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*" />
                   <input type="file" ref={cameraInputRef} onChange={handleFileChange} className="hidden" accept="image/*" capture="environment" />
                   {isConverting ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80">
@@ -1117,7 +1125,7 @@ export default function App() {
                           <span className="text-[10px] font-black uppercase tracking-tighter">Importer un fichier</span>
                         </button>
                       </div>
-                      <p className="text-[10px] text-slate-300">JPG, PNG, HEIC supportés</p>
+                      <p className="text-[10px] text-slate-300">JPG, PNG, HEIC — depuis la galerie, Drive, Dropbox, pCloud…</p>
                     </div>
                   )}
                 </div>
@@ -1164,7 +1172,7 @@ export default function App() {
                       onClick={() => refInputRef.current?.click()}
                       className="relative h-20 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden cursor-pointer hover:border-indigo-400 transition-all bg-slate-50 group flex items-center justify-center"
                     >
-                      <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*,.heic" />
+                      <input type="file" ref={refInputRef} onChange={handleReferenceChange} className="hidden" accept="image/*" />
                       {isConvertingRef ? (
                         <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
                       ) : (
