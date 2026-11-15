@@ -13,13 +13,14 @@ import {
   Home, Sofa, Brush, History, LogOut, Lock, TreePine,
   Eraser, Layout, Hammer, Boxes, PlusCircle, RefreshCcw,
   KeyRound, Eye, EyeOff, X, CheckCircle2, SplitSquareHorizontal, BarChart3,
-  MapPin, Pencil, Undo2, Trash2, Check, Map, Maximize2, Camera
+  MapPin, Pencil, Undo2, Trash2, Check, Map, Maximize2, Camera, Receipt
 } from 'lucide-react';
 import CompareSlider from './CompareSlider';
 import ZoneDraw from './ZoneDraw';
 import Lightbox from './Lightbox';
 import CameraCapture from './CameraCapture';
 import { useUnsavedGuard } from './useUnsavedGuard';
+import { chargerPont, facturerHomeStaging } from './facturation';
 import {
   loadImage, parseRooms, cropRoom, recomposite, inBatches,
   ANALYZE_ROOMS_PROMPT, ANALYZE_SITE_PROMPT, parseSite,
@@ -213,6 +214,15 @@ export default function App() {
   const [usedModel, setUsedModel] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [factureMsg, setFactureMsg] = useState(null);
+
+  // Pont de facturation chargé d'avance : la fenêtre doit s'ouvrir dans le geste de l'utilisateur.
+  useEffect(() => { chargerPont().catch(() => {}); }, []);
+  const facturer = () => {
+    setFactureMsg(null);
+    facturerHomeStaging({ designs: history, uid: user?.uid, onCreee: (f) => setFactureMsg('Facture ' + (f.ref || '') + ' créée.') })
+      .catch((e) => setError(e.message));
+  };
 
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -955,6 +965,14 @@ export default function App() {
               <BarChart3 className="w-3.5 h-3.5" />
               Coût AI Studio
             </a>
+            <button
+              onClick={facturer}
+              title="Établir une facture (service de facturation OPTIMMO) — visuels du jour pré-remplis"
+              className="flex items-center gap-1.5 text-[10px] font-bold px-3 py-2 rounded-xl transition-colors border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+            >
+              <Receipt className="w-3.5 h-3.5" />
+              Facturer
+            </button>
             {user && !user.isAnonymous ? (
               <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-4 rounded-2xl border border-slate-100">
                 {user.photoURL ? (
@@ -980,6 +998,12 @@ export default function App() {
             )}
           </div>
         </header>
+
+        {factureMsg && (
+          <div className="bg-emerald-50 border border-emerald-100 text-emerald-700 p-4 rounded-2xl flex items-center gap-3 text-xs font-bold">
+            <CheckCircle2 className="w-5 h-5 flex-shrink-0" /> {factureMsg}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border border-red-100 text-red-600 p-4 rounded-2xl flex items-center gap-3 text-xs font-bold">
